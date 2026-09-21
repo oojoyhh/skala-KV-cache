@@ -1,0 +1,85 @@
+"""보고서 생성 노드 단독 테스트 (6번). 실행: python -m pytest tests/test_report.py
+
+LLM 대신 가짜 generate를 주입한다. API 키 없이 동작한다.
+"""
+
+import re
+
+import pytest
+
+import config
+import llm
+from agents import report
+from agents.report import Citations, build_blocks, report_node
+from tests.fixtures import sample_state_after_eval
+
+
+def fake_generate(prompt: str) -> str:
+    """입력에 있는 인용을 그대로 쓰고, 존재하지 않는 인용 [99]를 하나 섞는다."""
+    cites = sorted(set(re.findall(r'"cite": "(\[[^"]+\])"', prompt)))
+    return "샘플 본문 " + " ".join(cites) + " 없는 인용 [99]"
+
+
+def failing_generate(prompt: str) -> str:
+    raise llm.LLMError("[E-1002] 테스트용 실패")
+
+
+def _text(blocks) -> str:
+    return "\n".join(v if isinstance(v, str) else str(v) for _, v in blocks)
+
+
+@pytest.mark.parametrize("sufficient", [True, False])
+def test_report_node_writes_pdf(tmp_path, monkeypatch, sufficient):
+    monkeypatch.setattr(config, "REPORT_PATH", str(tmp_path / config.REPORT_FILENAME))
+    out = report_node(sample_state_after_eval(sufficient), generate_fn=fake_generate)
+    assert out == {"report_path": config.REPORT_PATH}
+    assert (tmp_path / config.REPORT_FILENAME).stat().st_size > 1000
+
+
+def test_outline_order_and_rules():
+    state = sample_state_after_eval(True)
+    blocks = build_blocks(state, fake_generate)
+    titles = [v for k, v in blocks if k in ("h1", "h2", "h3")]
+    assert titles[1] == "SUMMARY" and titles[-1] == "REFERENCE"
+    assert titles[2:-1] == ["1. 분석 배경", "2. 기술 선정", "3. 기술 개요", "4. 관점별 평가", "4-1. 기술 성숙도 (TRL)",
+                            "4-2. 시장성", "4-3. 이해관계자", "4-4. 도메인 적용", "5. 시사점", "6. 한계점"]
+    text = _text(blocks)
+    assert "[99]" not in text                   # 없는 인용 제거
+    assert "공개 정보 기반 추정" in text          # TRL 명시 문구
+    assert "해당 없음" in text                   # TurboQuant transfer_overhead 등 빈 지표
+
+
+def test_reference_dedup_by_document():
+    state = sample_state_after_eval(True)
+    blocks = build_blocks(state, fake_generate)
+    refs = [v for k, v in blocks if k == "p"][-1].splitlines()
+    # 논문은 p.1·p.7 두 청크가 있어도 문서 단위로 한 줄
+    assert sum("TurboQuant: Online Vector Quantization" in r for r in refs) == 1
+    cited_docs = {r["source_id"].split("#")[0] for r in state["references"]}
+    assert len(refs) == len(cited_docs)
+    assert refs[0].startswith("[1] ")
+
+
+def test_citation_numbers_and_used_by_merge():
+    refs = [
+        {"source_id": "arxiv:1#p1", "kind": "paper", "author": "A", "date": "2025", "title": "T", "venue": "arXiv, 1",
+         "url": "u", "used_by": ["research"], "stance": "neutral"},
+        {"source_id": "arxiv:1#p7", "kind": "paper", "author": "A", "date": "2025", "title": "T", "venue": "arXiv, 1",
+         "url": "u", "used_by": ["domain"], "stance": "neutral"},
+        {"source_id": "web:x", "kind": "web", "author": "B", "date": "2026-05-11", "title": "W", "venue": "Blog",
+         "url": "https://b", "used_by": [], "stance": "negative"},
+    ]
+    c = Citations(refs)
+    assert c.cite("arxiv:1#p7") == "[1, p.7]" and c.cite("arxiv:1#p1") == "[1, p.1]"
+    assert c.cite("web:x") is None               # used_by가 비어 있으면 REFERENCE 제외
+    assert c.docs["arxiv:1"]["used_by"] == ["research", "domain"]
+    assert c.reference_lines() == ["[1] A(2025). T. arXiv, 1."]
+    assert report.format_reference(refs[2]) == "B(2026-05-11). W. Blog, https://b"
+
+
+def test_llm_failure_does_not_stop(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "REPORT_PATH", str(tmp_path / config.REPORT_FILENAME))
+    out = report_node(sample_state_after_eval(False), generate_fn=failing_generate)
+    assert (tmp_path / config.REPORT_FILENAME).exists() and out["report_path"]
+    md = (tmp_path / config.REPORT_FILENAME).with_suffix(".md").read_text(encoding="utf-8")
+    assert "[E-1002]" in md and "- [샘플]" in md  # 근거 목록으로 대체
