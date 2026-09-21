@@ -61,6 +61,7 @@ CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
 TOP_K = 5
 MMR_LAMBDA = 0.7
+RAG_MAX_REWRITE = 2        # 기술 조사 내부 루프: 관련성 부족 시 쿼리 재작성 최대 횟수 (CorrectiveRAG)
 FAISS_INDEX_DIR = "data/index"
 RETRIEVAL_EVAL_SET = "eval/retrieval_qa.json"   # 한국어 질문 → 정답 페이지 12개
 
