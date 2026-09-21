@@ -37,13 +37,16 @@ skala-KV-cache/
 ├── tests/                 # 노드 단독 테스트 + fixtures.py(샘플 State·가짜 검색·dummy 노드)    각 담당 / fixtures는 5번
 ├── assets/fonts/          # 보고서 PDF 한글 폰트                                               6번
 ├── outputs/               # 보고서 PDF (git 제외)
-├── docs/                  # RAG-Design_vN.md(최신본), DEV_PLAN.md(이 문서), notion-guide-notes.md    5번
+├── docs/                  # RAG-Design_vN.md(최신본), DEV_PLAN.md(이 문서)                          5번
+├── docs/private/          # notion-guide-notes.md (과제 안내 요약 — git 제외, Slack으로 배포)       5번
 ├── state.py  graph.py  app.py  config.py  llm.py                                                5번
+├── AGENTS.md  CLAUDE.md   # AI 코딩 도구 공통 지침 (CLAUDE.md는 AGENTS.md를 불러오기만 함)       5번
 ├── requirements.txt  .env.example  .gitignore                                                   5번 취합
 └── README.md                                                                                    6번
 ```
 
 - 설계 문서는 `docs/`에 둔다. 설계서 새 버전(`RAG-Design_v6.md` 등)도 `docs/`에 만든다.
+- 과제 안내 요약(`notion-guide-notes.md`)은 교수님 자료를 바탕으로 한 것이라 공개 저장소에 올리지 않는다. Slack으로 받아 각자 `docs/private/`에 둔다(`.gitignore` 처리). 원문 주소는 이 파일 상단에 있다.
 - Python은 가상환경(`.venv/`)을 쓴다: `python -m venv .venv` → 활성화 → `pip install -r requirements.txt`. 가상환경 폴더는 커밋하지 않는다.
 
 ---
@@ -153,7 +156,7 @@ python -c "from tests.fixtures import sample_state_after_research, fake_search; 
 | LLM | `GENERATOR_MODEL`, `JUDGE_MODEL` (기본 `gpt-4o-mini`, `.env`로 변경 가능), `TEMPERATURE=0` |
 | 충분성 | `MAX_RETRY=2`, `MIN_EVIDENCE=4`, `MIN_TRL_EVIDENCE=2`, `MIN_POSITIVE=1`, `MIN_NEGATIVE=1`, `SAME_SOURCE_CAP=0.5` |
 | 웹 검색 | `QUERIES_PER_STANCE=2`, `WEB_SEARCH_MAX_RESULTS=5`, `WEB_SEARCH_DEPTH="basic"`, `SEARCH_MIN_DATE`, `SEARCH_EXCLUDE_DOMAINS`, `USE_SEARCH_CACHE`, `SEARCH_CACHE_DIR` |
-| RAG | `PAPERS`, `EMBEDDING_MODEL="BAAI/bge-m3"`, `CHUNK_SIZE=800`, `CHUNK_OVERLAP=100`, `TOP_K=5`, `MMR_LAMBDA=0.7`, `FAISS_INDEX_DIR`, `RETRIEVAL_EVAL_SET` |
+| RAG | `PAPERS`, `EMBEDDING_MODEL="BAAI/bge-m3"`, `CHUNK_SIZE=800`, `CHUNK_OVERLAP=100`, `TOP_K=5`, `MMR_LAMBDA=0.7`, `RAG_MAX_REWRITE=2`, `FAISS_INDEX_DIR`, `RETRIEVAL_EVAL_SET` |
 | 출력 | `REPORT_PATH`(가이드 파일명), `FONT_DIR` |
 
 - `.env`: `OPENAI_API_KEY`, `TAVILY_API_KEY` (필수, `app.py`가 시작 시 확인), `GENERATOR_MODEL`·`JUDGE_MODEL`·`USE_SEARCH_CACHE`(선택). 실제 키는 커밋 금지.
@@ -208,7 +211,21 @@ python -c "from tests.fixtures import sample_state_after_research, fake_search; 
 - 작업 전 `git pull origin main` → 자기 브랜치에 merge 또는 rebase.
 - **자기 담당 파일만 수정.** `state.py`·`config.py`·`llm.py`·`graph.py` 변경은 5번에게 요청 (Issue 또는 Slack).
 - PR 머지는 5번. 12:00·13:00 통합 직전에 모아서 머지.
-- `.env`, `outputs/`, `data/*.faiss`, `__pycache__/`는 커밋 금지 (`.gitignore`).
+- `.env`, `.venv/`, `outputs/`, `data/index/`, `data/cache/`, `docs/private/`, `__pycache__/`는 커밋 금지 (`.gitignore`).
+
+### 공통 파일·설계 문서 변경 절차
+
+대상: 설계서, DEV_PLAN, `state.py` `config.py` `llm.py` `graph.py` `app.py` `tests/fixtures.py` `AGENTS.md`
+
+| 단계 | 내용 |
+|---|---|
+| 결정 | 설계서는 팀 합의, 나머지는 5번. 다른 담당자는 AGENTS.md "변경 제안 절차"로 요청 |
+| 영향 확인 | 수정 전에 함께 바뀌어야 할 파일 목록 작성 (AI는 목록을 먼저 보여주고 승인 후 수정) |
+| 수정 순서 | 설계서(노션 → `docs/RAG-Design_vN.md`) → DEV_PLAN → `state.py`·`config.py` → `tests/fixtures.py` → `graph.py`·`app.py` → AGENTS.md 표 |
+| 버전 | 구조·기준 변경은 설계서 새 버전, 문구 수정은 현재 버전. State가 바뀌면 설계서 D-1 필수 동기화 |
+| 시점 제한 | 10:00 이후 State·config는 추가만, 12:00 이후 구조 동결(값만 변경), 14:00 이후 오류 수정만 |
+| 확인 | `python app.py --dummy` + 기존 테스트 통과 |
+| 알림 | PR 제목 `[공통]`, 머지 직후 Slack에 "pull 받으세요 + 바뀐 점 한 줄" |
 
 ---
 
