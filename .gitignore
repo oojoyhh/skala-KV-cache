@@ -1,0 +1,35 @@
+# ── 환경변수 (API 키) — 절대 커밋 금지 ─────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Python 가상환경 ────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Python 캐시·테스트 ────────────────────────────────────
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+
+# ── 실행 생성물 ───────────────────────────────────────────
+# 보고서 PDF (제출본은 Slack으로 따로 제출)
+outputs/
+# FAISS 인덱스 캐시 (실행 시 재생성)
+data/index/
+# 웹 검색 캐시 (--use-cache용, 개인 로컬에만)
+data/cache/
+# python app.py --mermaid 출력 (README에 붙여 넣어 사용)
+docs/graph.mmd
+
+# ── 비공개 자료 (과제 안내 요약 등 — Slack으로만 배포, 공개 저장소에 올리지 않음) ──
+docs/private/
+
+# ── OS · IDE ─────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
