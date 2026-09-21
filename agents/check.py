@@ -3,18 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import TypedDict
-
-from agents.domain import DomainResult
-from agents.stakeholder import StakeholderResult
-
-
-class SufficiencyCheck(TypedDict):
-    trl: bool
-    market: bool
-    stakeholder: bool
-    domain: bool
-    reasons: dict[str, str]
+from state import DomainResult, StakeholderResult, SufficiencyCheck
 
 
 class SufficiencyValidationError(ValueError):

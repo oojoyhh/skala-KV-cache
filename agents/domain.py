@@ -2,28 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Literal, Protocol, Sequence, TypedDict
+from typing import Protocol, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
-
-
-Stance = Literal["positive", "negative", "neutral"]
-
-
-class Evidence(TypedDict):
-    claim: str
-    source_id: str
-    stance: Stance
-
-
-class DomainResult(TypedDict):
-    domain: str
-    cost: list[Evidence]
-    throughput: list[Evidence]
-    model_quality: list[Evidence]
-    transfer_overhead: list[Evidence]
-    deployment_barrier: list[Evidence]
-    summary: str
+from state import DomainResult, Evidence, Stance
 
 
 class DomainEvidenceSelection(BaseModel):

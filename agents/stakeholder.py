@@ -6,25 +6,10 @@ the design specification. It does not assess sufficiency or control workflow.
 
 from __future__ import annotations
 
-from typing import Literal, Protocol, Sequence, TypedDict
+from typing import Protocol, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
-
-
-Stance = Literal["positive", "negative", "neutral"]
-
-
-class Evidence(TypedDict):
-    claim: str
-    source_id: str
-    stance: Stance
-
-
-class StakeholderResult(TypedDict):
-    competitors: list[Evidence]
-    adopters_devs: list[Evidence]
-    investors: list[Evidence]
-    summary: str
+from state import Evidence, StakeholderResult, Stance
 
 
 class EvidenceSelection(BaseModel):
