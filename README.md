@@ -114,7 +114,7 @@ curl -fL --retry 3 https://arxiv.org/pdf/2406.19707v1 -o data/papers/2406.19707_
 printf '%s\n' \
   '431eb13926e10491f5fbd0bebd0813c51bd6c1e884426a1500c5db640b2997ab  data/papers/2504.19874_TurboQuant.pdf' \
   '267d689a1ded953f076eb93976c0ebeac1ad02029f1f7c9dd1c947aa05d7cb5f  data/papers/2406.19707_InfiniGen.pdf' \
-  | shasum -a 256 -c -          # Linux·Git Bash: sha256sum -c -
+  | sha256sum -c -              # macOS: shasum -a 256 -c -
 ```
 
 `OK`가 두 번 출력되면 완료입니다. 검증에 실패하면 해당 PDF를 사용하지 말고 다시 내려받으세요 ([TurboQuant v1](https://arxiv.org/abs/2504.19874v1), [InfiniGen v1](https://arxiv.org/abs/2406.19707v1)). PDF 없이 실행하면 기술 조사 단계에서 `[E-1003] 논문 PDF 로딩 실패`가 기록되고 기술 개요가 빈 채로 보고서가 생성됩니다.
