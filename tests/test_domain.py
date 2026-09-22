@@ -80,6 +80,7 @@ class DomainNodeTests(unittest.TestCase):
         update = domain_node(self.state, search_fn=fake_search, client=self.client)
 
         returned_ids = {reference["source_id"] for reference in update["references"]}
+        self.assertTrue(returned_ids)
         self.assertFalse(existing_ids & returned_ids)
     def test_retry_and_search_error_contracts_are_preserved(self) -> None:
         first, retry = [], []
