@@ -102,6 +102,24 @@ graph TD
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 cp .env.example .env        # Windows: copy .env.example .env / OPENAI_API_KEY, TAVILY_API_KEY 입력
+```
+
+**논문 PDF 준비** (`data/papers/`는 git 제외, 최초 1회): RAG가 읽는 arXiv 논문 2편을 내려받고 SHA-256으로 무결성을 확인합니다.
+
+```bash
+mkdir -p data/papers
+curl -fL --retry 3 https://arxiv.org/pdf/2504.19874 -o data/papers/2504.19874_TurboQuant.pdf
+curl -fL --retry 3 https://arxiv.org/pdf/2406.19707 -o data/papers/2406.19707_InfiniGen.pdf
+
+printf '%s\n' \
+  '431eb13926e10491f5fbd0bebd0813c51bd6c1e884426a1500c5db640b2997ab  data/papers/2504.19874_TurboQuant.pdf' \
+  '267d689a1ded953f076eb93976c0ebeac1ad02029f1f7c9dd1c947aa05d7cb5f  data/papers/2406.19707_InfiniGen.pdf' \
+  | shasum -a 256 -c -
+```
+
+`OK`가 두 번 출력되면 완료입니다. 검증에 실패하면 해당 PDF를 사용하지 말고, [TurboQuant](https://arxiv.org/abs/2504.19874)·[InfiniGen](https://arxiv.org/abs/2406.19707) 페이지에서 최신 arXiv 버전과 일치하는지 확인하세요.
+
+```bash
 python app.py               # → outputs/RAG-Output_판교_8반_*.pdf
 ```
 
