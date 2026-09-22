@@ -63,6 +63,92 @@ def test_to_reference_excludes_content():
     assert len(reference) == 9
 
 
+def test_published_date_is_preserved(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    records = search_web(
+        "dated result",
+        "neutral",
+        client=FakeTavilyClient({"results": [_result(date="2026-09-21")]}),
+    )
+    assert records[0]["date"] == "2026-09-21"
+
+
+def test_published_datetime_is_normalized_to_date(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    records = search_web(
+        "datetime result",
+        "neutral",
+        client=FakeTavilyClient({"results": [_result(date="2026-09-21T08:30:00Z")]}),
+    )
+    assert records[0]["date"] == "2026-09-21"
+
+
+def test_date_field_is_used_when_published_date_is_missing(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    result = _result()
+    result.pop("published_date")
+    result["date"] = "2025"
+    records = search_web(
+        "year result", "neutral", client=FakeTavilyClient({"results": [result]})
+    )
+    assert records[0]["date"] == "2025"
+
+
+def test_missing_provider_date_remains_empty(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    result = _result()
+    result.pop("published_date")
+    records = search_web(
+        "undated result", "neutral", client=FakeTavilyClient({"results": [result]})
+    )
+    assert records[0]["date"] == ""
+
+
+def test_to_reference_preserves_normalized_date(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    records = search_web(
+        "reference date",
+        "neutral",
+        client=FakeTavilyClient({"results": [_result(date="2026-09-21T08:30:00Z")]}),
+    )
+    assert to_reference(records[0])["date"] == "2026-09-21"
+
+
+def test_cache_round_trip_preserves_provider_date(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    client = FakeTavilyClient({"results": [_result(date="2026-09-21T08:30:00Z")]})
+    live_records = search_web("cached date", "neutral", client=client)
+    cache_file = next(tmp_path.glob("*.json"))
+    cached_payload = json.loads(cache_file.read_text(encoding="utf-8"))
+    assert cached_payload["results"][0]["published_date"] == "2026-09-21T08:30:00Z"
+
+    monkeypatch.setattr(config, "USE_SEARCH_CACHE", True)
+    cached_records = search_web(
+        "cached date",
+        "neutral",
+        client=FakeTavilyClient(error=AssertionError("live call must not happen")),
+    )
+    assert live_records[0]["date"] == cached_records[0]["date"] == "2026-09-21"
+    assert to_reference(cached_records[0])["date"] == "2026-09-21"
+
+
+def test_missing_date_is_not_generated_during_cache_round_trip(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    result = _result()
+    result.pop("published_date")
+    assert search_web(
+        "cached undated result", "neutral", client=FakeTavilyClient({"results": [result]})
+    )[0]["date"] == ""
+
+    monkeypatch.setattr(config, "USE_SEARCH_CACHE", True)
+    cached_records = search_web(
+        "cached undated result",
+        "neutral",
+        client=FakeTavilyClient(error=AssertionError("live call must not happen")),
+    )
+    assert cached_records[0]["date"] == ""
+
+
 def test_tavily_exception_returns_empty(monkeypatch, tmp_path):
     _configure(monkeypatch, tmp_path)
     client = FakeTavilyClient(error=RuntimeError("secret provider detail"))

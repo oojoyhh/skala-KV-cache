@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence, Union
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -127,6 +128,22 @@ def _normalize_used_by(used_by: Union[str, Sequence[str]]) -> list[str]:
     return list(dict.fromkeys(value.strip() for value in values if value and value.strip()))
 
 
+def _normalize_date(value: Any) -> str:
+    """Normalize a provider-supplied year or ISO date without inventing one."""
+
+    if value is None:
+        return ""
+    raw_date = str(value).strip()
+    if re.fullmatch(r"\d{4}", raw_date):
+        return raw_date
+    try:
+        if "T" in raw_date or " " in raw_date:
+            return datetime.fromisoformat(raw_date.replace("Z", "+00:00")).date().isoformat()
+        return date.fromisoformat(raw_date).isoformat()
+    except ValueError:
+        return ""
+
+
 def result_to_reference(
     result: Mapping[str, Any],
     stance: Stance,
@@ -141,18 +158,13 @@ def result_to_reference(
     hostname = urlsplit(normalized).hostname or ""
     venue = result.get("venue") or result.get("site_name") or result.get("source") or hostname
     author = result.get("author") or result.get("organization") or ""
-    published = (
-        result.get("published_date")
-        or result.get("published_at")
-        or result.get("date")
-        or ""
-    )
+    published = result.get("published_date") or result.get("date") or ""
 
     return {
         "source_id": make_source_id(normalized),
         "kind": "web",
         "author": str(author).strip(),
-        "date": str(published).strip(),
+        "date": _normalize_date(published),
         "title": str(result.get("title") or "").strip(),
         "venue": str(venue).strip(),
         "url": normalized,
