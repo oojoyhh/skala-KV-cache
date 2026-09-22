@@ -45,9 +45,18 @@ def fake_search(query, stance="neutral", max_results=None, used_by="market", **_
     return [_record(query, stance)]
 
 
+def _prompt_rows(prompt):
+    candidate_text = prompt.split("입력 검색 결과 후보:\n", 1)[1]
+    rows = []
+    for line in candidate_text.splitlines():
+        candidate_id, payload = line.split(" | ", 1)
+        rows.append({"id": candidate_id, **json.loads(payload)})
+    return rows
+
+
 class FakeStructuredClient:
     def invoke(self, prompt, response_model):
-        rows = json.loads(prompt.split("입력 검색 결과 JSON:\n", 1)[1])
+        rows = _prompt_rows(prompt)
         items = []
         for row in rows:
             text = row["content"]
@@ -68,8 +77,7 @@ class FakeStructuredClient:
                 category = "adoption"
             items.append(
                 {
-                    "source_id": row["source_id"],
-                    "claim": text,
+                    "id": row["id"],
                     "stance": stance,
                     "market_category": category,
                     "trl_level": 5 if row["search_perspective"] == "trl" else None,
@@ -227,8 +235,7 @@ def test_validated_korean_limitation_keeps_llm_negative_stance():
             return response_model(
                 items=[
                     {
-                        "source_id": record["source_id"],
-                        "claim": claim,
+                        "id": "S1",
                         "stance": "negative",
                         "market_category": "adoption",
                     }
@@ -237,6 +244,8 @@ def test_validated_korean_limitation_keeps_llm_negative_stance():
 
     items, failed = _validated_items("TurboQuant", [record], KoreanLimitationClient())
     assert not failed
+    assert items[0].source_id == record["source_id"]
+    assert items[0].claim == claim
     assert items[0].stance == "negative"
 
 
@@ -255,8 +264,7 @@ def test_validated_korean_support_keeps_llm_positive_stance():
             return response_model(
                 items=[
                     {
-                        "source_id": record["source_id"],
-                        "claim": claim,
+                        "id": "S1",
                         "stance": "positive",
                         "market_category": "adoption",
                     }
@@ -266,6 +274,162 @@ def test_validated_korean_support_keeps_llm_positive_stance():
     items, failed = _validated_items("TurboQuant", [record], KoreanSupportClient())
     assert not failed
     assert items[0].stance == "positive"
+
+
+def test_unknown_short_id_only_drops_that_selection():
+    first = {
+        **_record("TurboQuant first adoption", "positive", 1),
+        "content": "TurboQuant framework support improves adoption.",
+        "_perspective": "market",
+    }
+    second = {
+        **_record("TurboQuant second adoption", "negative", 2),
+        "content": "TurboQuant requires a separate kernel integration.",
+        "_perspective": "market",
+    }
+
+    class PartlyInvalidClient:
+        def invoke(self, prompt, response_model):
+            return response_model(
+                items=[
+                    {"id": "S1", "stance": "positive", "market_category": "ecosystem"},
+                    {"id": "S99", "stance": "neutral", "market_category": "none"},
+                    {"id": "S2", "stance": "negative", "market_category": "adoption"},
+                ]
+            )
+
+    items, failed = _validated_items(
+        "TurboQuant", [first, second], PartlyInvalidClient()
+    )
+    assert not failed
+    assert [item.source_id for item in items] == [first["source_id"], second["source_id"]]
+    assert [item.claim for item in items] == [first["content"], second["content"]]
+
+
+def test_dedupe_replaces_missing_trl_with_valid_level():
+    source_id = "web:shared"
+    records = [
+        {
+            **_record("TurboQuant adoption", "neutral", 1),
+            "source_id": source_id,
+            "content": "TurboQuant adoption background.",
+        },
+        {
+            **_record("TurboQuant prototype", "neutral", 2),
+            "source_id": source_id,
+            "content": "TurboQuant prototype benchmark evaluation.",
+        },
+    ]
+
+    class NoneThenFiveClient:
+        def invoke(self, prompt, response_model):
+            return response_model(
+                items=[
+                    {"id": "S1", "stance": "neutral", "market_category": "adoption"},
+                    {
+                        "id": "S2",
+                        "stance": "positive",
+                        "market_category": "adoption",
+                        "trl_level": 5,
+                    },
+                ]
+            )
+
+    items, failed = _validated_items("TurboQuant", records, NoneThenFiveClient())
+    assert not failed
+    assert len(items) == 1
+    assert items[0].trl_level == 5
+    assert items[0].claim == records[1]["content"]
+
+
+def test_dedupe_keeps_highest_trl_when_lower_level_follows():
+    source_id = "web:shared"
+    records = [
+        {
+            **_record("TurboQuant prototype", "positive", 1),
+            "source_id": source_id,
+            "content": "TurboQuant prototype benchmark evaluation.",
+        },
+        {
+            **_record("TurboQuant paper", "neutral", 2),
+            "source_id": source_id,
+            "content": "TurboQuant paper reports experimental results.",
+        },
+    ]
+
+    class FiveThenThreeClient:
+        def invoke(self, prompt, response_model):
+            return response_model(
+                items=[
+                    {
+                        "id": "S1",
+                        "stance": "positive",
+                        "market_category": "adoption",
+                        "trl_level": 5,
+                    },
+                    {
+                        "id": "S2",
+                        "stance": "neutral",
+                        "market_category": "adoption",
+                        "trl_level": 3,
+                    },
+                ]
+            )
+
+    items, failed = _validated_items("TurboQuant", records, FiveThenThreeClient())
+    assert not failed
+    assert len(items) == 1
+    assert items[0].trl_level == 5
+    assert items[0].claim == records[0]["content"]
+
+
+def test_trl_evidence_uses_candidate_that_supports_selected_high_level():
+    shared_source = "web:shared"
+    records = [
+        {
+            **_record("TurboQuant background", "neutral", 1),
+            "source_id": shared_source,
+            "content": "TurboQuant adoption background.",
+        },
+        {
+            **_record("TurboQuant first prototype", "positive", 2),
+            "source_id": shared_source,
+            "content": "TurboQuant prototype benchmark evaluation in a testbed.",
+        },
+        {
+            **_record("TurboQuant second prototype", "positive", 3),
+            "content": "TurboQuant independent prototype benchmark evaluation.",
+        },
+    ]
+
+    class HighestCandidatesClient:
+        def invoke(self, prompt, response_model):
+            return response_model(
+                items=[
+                    {"id": "S1", "stance": "neutral", "market_category": "none"},
+                    {
+                        "id": "S2",
+                        "stance": "positive",
+                        "market_category": "none",
+                        "trl_level": 5,
+                    },
+                    {
+                        "id": "S3",
+                        "stance": "positive",
+                        "market_category": "none",
+                        "trl_level": 5,
+                    },
+                ]
+            )
+
+    items, failed = _validated_items("TurboQuant", records, HighestCandidatesClient())
+    estimate = _trl_estimate("TurboQuant", items, "")
+    assert not failed
+    assert estimate["level"] == 5
+    assert {evidence["claim"] for evidence in estimate["evidence"]} == {
+        records[1]["content"],
+        records[2]["content"],
+    }
 
 
 def test_retry_hint_changes_queries():
@@ -375,14 +539,13 @@ def test_one_technology_success_keeps_both_keys_and_marks_e1004():
     )
 
 
-def test_invalid_llm_source_and_claim_are_rejected():
+def test_invalid_llm_candidate_id_is_rejected():
     class HallucinatingClient:
         def invoke(self, prompt, response_model):
             return response_model(
                 items=[
                     {
-                        "source_id": "web:not-input",
-                        "claim": "invented company adopted 99 percent",
+                        "id": "S99",
                         "stance": "positive",
                         "market_category": "adoption",
                         "trl_level": 9,
