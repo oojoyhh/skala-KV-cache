@@ -59,6 +59,7 @@ PAPERS = {  # 기술 → 논문 검색과 REFERENCE 생성에 필요한 메타�
         "title": "TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate",
         "author": "Zandieh, A. et al.",
         "date": "2025",
+        "venue": "arXiv, 2504.19874",
     },
     "InfiniGen": {
         "arxiv_id": "2406.19707",
@@ -66,6 +67,7 @@ PAPERS = {  # 기술 → 논문 검색과 REFERENCE 생성에 필요한 메타�
         "title": "InfiniGen: Efficient Generative Inference of Large Language Models with Dynamic KV Cache Management",
         "author": "Lee, W., Lee, J., Seo, J., Sim, J.",
         "date": "2024",
+        "venue": "OSDI 2024, pp. 155–172",
     },
 }
 EMBEDDING_MODEL = "BAAI/bge-m3"            # langchain_huggingface.HuggingFaceEmbeddings로 로드

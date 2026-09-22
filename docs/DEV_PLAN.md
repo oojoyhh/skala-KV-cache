@@ -159,7 +159,7 @@ python -c "from tests.fixtures import sample_state_after_research, fake_search; 
 | RAG | `PAPERS`, `EMBEDDING_MODEL="BAAI/bge-m3"`, `CHUNK_SIZE=800`, `CHUNK_OVERLAP=100`, `TOP_K=5`, `MMR_FETCH_K=10`, `MMR_LAMBDA=0.7`, `RAG_MAX_REWRITE=2`, `FAISS_INDEX_DIR`, `RETRIEVAL_EVAL_SET` |
 | 출력 | `REPORT_PATH`(가이드 파일명), `FONT_DIR` |
 
-- `PAPERS[기술명]`은 `arxiv_id`, `path`, `title`, `author`, `date`를 담는다. 로더와 REFERENCE 생성은 이 메타데이터를 공통으로 사용한다.
+- `PAPERS[기술명]`은 `arxiv_id`, `path`, `title`, `author`, `date`, `venue`를 담는다. 로더와 REFERENCE 생성은 이 메타데이터를 공통으로 사용한다.
 - `.env`: `OPENAI_API_KEY`, `TAVILY_API_KEY` (필수, `app.py`가 시작 시 확인), `GENERATOR_MODEL`·`JUDGE_MODEL`·`USE_SEARCH_CACHE`(선택). 실제 키는 커밋 금지.
 - LLM은 `llm.py`로만 호출: `generate(prompt)`, `structured(prompt, PydanticModel)`, `StructuredClient()`(4번 분류 함수에 그대로 주입), `load_prompt(name)`. 실패 시 `LLMError("[E-1002] ...")` → 노드가 잡아서 빈 결과 처리.
 - Python **3.10 이상** (`state.py`의 `dict[...]`·`tuple[...]` 표기).
