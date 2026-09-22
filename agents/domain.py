@@ -254,15 +254,20 @@ def domain_node(
         candidates: list[Evidence] = []
         references_by_id: dict[str, Reference] = {}
         last_query = ""
+        search_failed = False
         try:
             for query, stance in _domain_queries(state, technology, hint):
                 last_query = query
-                for record in search(
+                found = search(
                     query,
                     stance,
                     max_results=config.WEB_SEARCH_MAX_RESULTS,
                     used_by="domain",
-                ):
+                )
+                if getattr(found, "error_code", None):
+                    search_failed = True
+                    continue
+                for record in found:
                     reference = _record_to_reference(record)
                     references_by_id[reference["source_id"]] = reference
                     candidate = {
@@ -278,7 +283,8 @@ def domain_node(
             continue
 
         if not candidates:
-            results[technology] = _empty_result(state["domain"], f"[E-1001] 검색 결과 없음: {last_query}")
+            code = "[E-1002] 검색 실패" if search_failed else "[E-1001] 검색 결과 없음"
+            results[technology] = _empty_result(state["domain"], f"{code}: {last_query}")
             continue
 
         try:

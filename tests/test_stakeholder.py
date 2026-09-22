@@ -13,6 +13,10 @@ from agents.stakeholder import (
 from tests.fixtures import fake_search, sample_state_after_research
 
 
+class SearchFailureResult(list):
+    error_code = "E-1002"
+
+
 class FakeStructuredOutputClient:
     def __init__(self, result: StakeholderStructuredResponse) -> None:
         self.result = result
@@ -270,6 +274,27 @@ class StakeholderNodeTests(unittest.TestCase):
             self.assertEqual(result["competitors"], [])
             self.assertTrue(result["summary"].startswith("[E-1001]"))
         self.assertEqual(update["references"], [])
+
+    def test_error_code_empty_results_return_e1002_for_both_technologies(self) -> None:
+        update = stakeholder_node(self.state, search_fn=lambda *args, **kwargs: SearchFailureResult(), client=self.client)
+
+        for result in update["stakeholder_result"].values():
+            self.assertTrue(result["summary"].startswith("[E-1002]"))
+        self.assertEqual(update["references"], [])
+
+    def test_error_code_result_does_not_discard_candidates_from_later_queries(self) -> None:
+        calls = 0
+
+        def partially_failed_search(query: str, stance: str, **kwargs):
+            nonlocal calls
+            calls += 1
+            return SearchFailureResult() if calls == 1 else fake_search(query, stance, **kwargs)
+
+        update = stakeholder_node(self.state, search_fn=partially_failed_search, client=self.client)
+
+        for result in update["stakeholder_result"].values():
+            self.assertFalse(result["summary"].startswith("[E-1002]"))
+            self.assertTrue(result["competitors"])
 
     def test_search_failure_isolated_to_one_technology(self) -> None:
         def partially_failing_search(query: str, stance: str, **kwargs):
