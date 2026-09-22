@@ -231,11 +231,11 @@ python -c "from tests.fixtures import sample_state_after_research, fake_search; 
 
 ## 8. 결정 사항 · 미결 사항
 
-### 결정됨 (2026-09-21, 노션 가이드 정책과 대조 완료)
+### 결정됨 (2026-09-22 갱신; 2026-09-21 노션 가이드 정책 대조 완료)
 
 | # | 항목 | 결정 | 반영 위치 |
 |---|---|---|---|
-| 1 | LLM 모델 | OpenAI, 생성용·판정용 2역할, temperature 0. 모델명은 `.env`로 지정(기본 gpt-4o-mini — 팀 키에서 쓸 수 있는지 확인) | `config.py`, `llm.py`, README Tech Stack |
+| 1 | LLM 모델 | 2026-09-22 `gpt-4o-mini`로 진행 확정. OpenAI 생성용·판정용 2역할 모두 사용, temperature 0. 변경 시 `.env`의 `GENERATOR_MODEL`·`JUDGE_MODEL`로 지정 | `config.py`, `llm.py`, README Tech Stack |
 | 2 | 시장 평가 LLM | 검색 결과의 stance·항목 분류는 4번과 같은 방식(LLM 구조화 출력 + 입력 근거만 허용하는 검증). TRL 판정 규칙(서로 다른 출처 2개)은 코드 규칙 유지 | 3번 `agents/market.py` |
 | 3 | 충분성 기준 | 설계서 D-2 기준을 **관점별·기술별** 적용(§3-3). 표현은 v5 기준 "지지·한계·반론 근거 각 1건 이상, 없으면 생성하지 않고 기록". 지표·집단을 전부 채우라는 조건은 없음 → 해당 없는 지표(TurboQuant `transfer_overhead`)는 빈 리스트로 두고 보고서에 "해당 없음" | 4번 `agents/check.py`, `config.py`, 설계서 D-2 |
 | 4 | 이해관계자·도메인 검색 | 4번 `*_node`가 `search_web`으로 지지·한계·반론 쿼리 각 `QUERIES_PER_STANCE`개 검색 → Evidence 생성 → 기존 분류 함수(`StructuredClient` 주입) | 4번 `agents/stakeholder.py`·`domain.py` |
@@ -246,6 +246,8 @@ python -c "from tests.fixtures import sample_state_after_research, fake_search; 
 | 9 | 그래프 그림 | 설계서는 직접 그린 Mermaid 유지, 실제 구조는 `python app.py --mermaid` 출력을 README Architecture에 첨부 | `graph.export_mermaid` |
 | 10 | 개선 후보 | 3·5·6 제외, 8(요약 매트릭스)은 State 변경 없이 보고서에서 `perspective_evidence` stance 개수로 계산 | 6번 `agents/report.py` |
 | 11 | TRL 근거 예시·stance 표현 (v5, 3번 제안) | TRL 6 = 서빙 유사 환경 통합 시연(통합 PR 제출만으로는 불인정), 7 = 실제 운영 환경 pilot·preview·beta, 8 = 정식 출시 + 운영·고객 적용 검증. stance: positive = 지지, negative = 한계·반론 | 설계서 v5 C-2·D-1, `state.py` 주석 |
+| 12 | API 키 운영 방식 | 2026-09-22 확정: OpenAI는 사전 지급 키, Tavily는 팀원 개인 키 하나를 공용으로 사용. 키는 각자 `.env`에만 보관하고 저장소·공개 채널에 올리지 않음. 개발·테스트 시 공용 Tavily 한도 절약을 위해 구현된 검색 캐시 활용 가능(`--use-cache`) | 각자 `.env`, `app.py --use-cache` |
+| 13 | 설계서 초안값 확정 | 2026-09-22 전원 초안 그대로 확정: 청킹 800토큰·overlap 100토큰·섹션 우선, Top-k 5·MMR λ=0.7, 평가셋 12개(기술당 6개), 재조사 최대 2회(불충분 판정 시 `retry_count` 증가, `retry_count > 2`이면 종료), 분석 배경·기술 선정·기술 개요·관점별 평가·시사점·한계점 분량은 각각 ½·½·2·4·1·½ p. 충분성 기준은 #3·§3-3, TRL 예시는 #11 유지. 노션·로컬 설계서 중괄호 제거 완료, Git PR 반영은 남음 | 설계서 v5 B-2·B-3·D-2·E, `config.py` 기존 값 유지 |
 
 ### 미결 (담당자 확인)
 
@@ -255,8 +257,7 @@ python -c "from tests.fixtures import sample_state_after_research, fake_search; 
 | B | 검색 전면 실패 시 예외 발생 | §6 E-1002(빈 결과)로 변경 필요 | 3번 |
 | C | 웹 검색 신뢰도 필터 값 | `SEARCH_MIN_DATE`, `SEARCH_EXCLUDE_DOMAINS` 비어 있음 | 3번 |
 | D | PDF 라이브러리·한글 폰트 | 폰트 파일 저장소 포함(OFL), 11:00 전 출력 확인 | 6번 |
-| E | 임베딩 로딩 | `HuggingFaceEmbeddings`로 통일, 모델(약 2GB) 오늘 밤 미리 다운로드 | 1번 (전원 다운로드) |
-| F | 설계서 `{}` 초안값 6건 | 초안 그대로 확정 권장 — 담당자 확인 후 중괄호 제거 | 1·2·3·4·6번 |
+| E | 임베딩 로딩 | `HuggingFaceEmbeddings`로 통일, DAY 3 교육장에서 모델 사전 다운로드·로딩 확인 예정(완료 여부 미확인) | 1번 (전원 다운로드) |
 | G | 기존 브랜치 정리 | main의 `state.py` 기준으로 타입 import 교체 + `*_node` 래퍼 추가 후 PR | 3·4번 |
 | H | TRL 판정 코드를 v5 C-2에 맞추기 | `market.py`는 'serving+benchmark' 단어만으로 6, 'generally available'만으로 8을 줌 → 6은 서빙 환경 통합 시연 근거, 8은 출시 + 운영·고객 적용 근거가 있을 때만 | 3번 |
 | I | 충분성 reasons 문구 | 부족 사유를 "반론 근거 미확인(negative 0건)"처럼 쿼리 힌트로 쓸 수 있게 (예시는 `tests/fixtures.expected_sufficiency`) | 4번 |
