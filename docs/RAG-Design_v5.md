@@ -103,10 +103,10 @@
 | 단계 | 설계 | 사유 |
 |---|---|---|
 | 로딩 | PyMuPDF(fitz), 페이지 번호·섹션 헤딩 메타데이터 보존 | 출처 페이지 추적, 2단 논문 텍스트 추출 안정성 |
-| 청킹 | {chunk_size 800토큰, overlap 100토큰, 섹션(헤딩) 단위로 먼저 나눈 뒤 길이 분할} | {수식·표가 많은 논문 특성 — 표·수식이 청크 경계에서 잘리지 않도록 섹션 우선} |
+| 청킹 | chunk_size 800토큰, overlap 100토큰, 섹션(헤딩) 단위로 먼저 나눈 뒤 길이 분할 | 수식·표가 많은 논문 특성 — 표·수식이 청크 경계에서 잘리지 않도록 섹션 우선 |
 | 벡터 DB | FAISS (로컬, 캐시) | 재현성, 설치 부담 없음 |
-| 검색기 | {Top-k = 5, MMR 사용(λ=0.7)} — dense 검색 고정 (Hybrid는 이번 범위 제외) | {두 논문에서 같은 주제 청크가 중복 검색되는 것을 MMR로 억제 / 1.5일 일정 내 구현 범위 통제} |
-| 검색 평가 | {질문-정답 쌍 12개(기술당 6개, 한국어 질문 → 정답 페이지), Hit Rate@5, MRR} | {README Retrieval 지표 대응} |
+| 검색기 | Top-k = 5, MMR 사용(λ=0.7) — dense 검색 고정 (Hybrid는 이번 범위 제외) | 두 논문에서 같은 주제 청크가 중복 검색되는 것을 MMR로 억제 / 1.5일 일정 내 구현 범위 통제 |
+| 검색 평가 | 질문-정답 쌍 12개(기술당 6개, 한국어 질문 → 정답 페이지), Hit Rate@5, MRR | README Retrieval 지표 대응 |
 | Agentic 요소 | 관련성 체크 → 부족 시 쿼리 재작성 후 재검색 (CorrectiveRAG 패턴) | 단순 검색이 아닌 Agentic RAG 요건 충족, RAG 근거 부족을 그래프 루프 밖에서 해소 |
 
 ### B-3. Embedding 모델  `[배점 10 — 오픈소스 필수, "리더보드 상위"는 부적절]`
@@ -128,7 +128,7 @@
 
 **적용 전략**
 - 논문 2편을 dense 임베딩으로 인덱싱해 FAISS에 보관, 인덱스는 캐시해 재실행 시 재사용
-- 검색 품질은 한국어 질문-정답 페이지 평가셋({12}개)으로 Hit Rate@5, MRR 측정 → README Retrieval 지표에 기재
+- 검색 품질은 한국어 질문-정답 페이지 평가셋(12개)으로 Hit Rate@5, MRR 측정 → README Retrieval 지표에 기재
 
 ---
 
@@ -327,11 +327,11 @@ flowchart TD
 |---|---|---|
 | Workflow | 기술 선정 → 기술 조사 → 평가 → 평가 종합 → 보고서 생성 | 정보 수집 → 분석 → 평가 → 보고서 순차 흐름 |
 | Branch (Fan-out) | 기술 조사 → 시장 / 이해관계자 / 도메인 | 병렬 실행, State 키 분리 |
-| Loop | 충분성 검사 → 부족 관점 에이전트 → 충분성 검사 | 4개 관점 플래그(trl/market/stakeholder/domain)로 해당 노드만 재실행 (trl·market은 같은 시장 평가 노드), `sufficiency.reasons` 를 재조사 쿼리 힌트로 사용, 재조사 최대 {N=2}회 — 불충분 판정마다 `retry_count` +1, `retry_count` > N이면 평가 종합으로 진행(부족 관점은 한계점에 기록) |
+| Loop | 충분성 검사 → 부족 관점 에이전트 → 충분성 검사 | 4개 관점 플래그(trl/market/stakeholder/domain)로 해당 노드만 재실행 (trl·market은 같은 시장 평가 노드), `sufficiency.reasons` 를 재조사 쿼리 힌트로 사용, 재조사 최대 N=2회 — 불충분 판정마다 `retry_count` +1, `retry_count` > N이면 평가 종합으로 진행(부족 관점은 한계점에 기록) |
 | Loop (내부) | 기술 조사 에이전트 내부 | 관련성 체크 → 쿼리 재작성 → 재검색 (CorrectiveRAG). Fan-out 앞이라 그래프 루프와 분리 |
 | Branch (조건) | 충분성 검사 → 재조사 / 평가 종합 | 조건부 엣지 |
 
-- 루프 종료 조건: {관점별·기술별 Evidence 4개 이상 & 지지(positive)·한계·반론(negative) 근거 각 1건 이상 (TRL은 evidence 2개 이상), 또는 retry_count > N=2}
+- 루프 종료 조건: 관점별·기술별 Evidence 4개 이상 & 지지(positive)·한계·반론(negative) 근거 각 1건 이상 (TRL은 evidence 2개 이상), 또는 retry_count > N=2
 - 한계·반론 근거가 없으면 관련 쿼리로 재조사하고, 재조사 후에도 없으면 만들어내지 않고 reasons와 보고서 한계점에 '반론 근거 미확인'으로 기록
 - 설계서 그림은 위 Mermaid를 유지(기술 조사 내부 루프 표시). 구현 후 `python app.py --mermaid`로 뽑은 실제 그래프(`draw_mermaid()` 출력)는 README Architecture에 첨부
 
@@ -342,12 +342,12 @@ flowchart TD
 | 순서 | 챕터 | 분량 | 내용 출처 (State를 채운 에이전트) | 내용 (State 출처) |
 |---|---|---|---|---|
 | 0 | SUMMARY | ½ page 이내 | 보고서 생성 | 전체 핵심 요약 (개요 장표 아님) |
-| 1 | 분석 배경 | {½ p} | 보고서 생성 | 왜 KV cache가 필요하고 분석하는가, 선정 도메인 |
-| 2 | 기술 선정 | {½ p} | 보고서 생성 | TurboQuant / InfiniGen 선정 이유 |
-| 3 | 기술 개요 | {2 p} | 기술 조사 | tech_summary — 기술별 접근·범위·수치·한계 |
-| 4 | 관점별 평가 | {4 p} | 시장·이해관계자·도메인 평가 | 4-1 TRL (trl_result) / 4-2 시장성 (market_result) / 4-3 이해관계자 (stakeholder_result) / 4-4 도메인 (domain_result, 5개 지표 표) |
-| 5 | 시사점 | {1 p} | 평가 종합 | synthesis.conflicts — 관점에 따라 평가가 엇갈리는 지점 중심 |
-| 6 | 한계점 | {½ p} | 평가 종합 | synthesis.limitations — 공개 정보 기반 추정의 한계, 확증편향 방지 조치, 반론 근거 미확인·재조사 상한 도달 관점 |
+| 1 | 분석 배경 | ½ p | 보고서 생성 | 왜 KV cache가 필요하고 분석하는가, 선정 도메인 |
+| 2 | 기술 선정 | ½ p | 보고서 생성 | TurboQuant / InfiniGen 선정 이유 |
+| 3 | 기술 개요 | 2 p | 기술 조사 | tech_summary — 기술별 접근·범위·수치·한계 |
+| 4 | 관점별 평가 | 4 p | 시장·이해관계자·도메인 평가 | 4-1 TRL (trl_result) / 4-2 시장성 (market_result) / 4-3 이해관계자 (stakeholder_result) / 4-4 도메인 (domain_result, 5개 지표 표) |
+| 5 | 시사점 | 1 p | 평가 종합 | synthesis.conflicts — 관점에 따라 평가가 엇갈리는 지점 중심 |
+| 6 | 한계점 | ½ p | 평가 종합 | synthesis.limitations — 공개 정보 기반 추정의 한계, 확증편향 방지 조치, 반론 근거 미확인·재조사 상한 도달 관점 |
 | 7 | REFERENCE | — | 보고서 생성 | references를 source_id로 중복 제거 후 used_by가 있는 항목만, 본문 인용 번호는 source_id 기준으로 부여 |
 
 - 모든 챕터의 작성 주체는 📝 보고서 생성 에이전트. 위 열은 각 챕터가 읽는 State 키를 채운 에이전트를 뜻함
