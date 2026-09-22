@@ -171,7 +171,7 @@ python -c "from tests.fixtures import sample_state_after_research, fake_search; 
 - `.env`: `OPENAI_API_KEY`, `TAVILY_API_KEY` (필수, `app.py`가 시작 시 확인), `GENERATOR_MODEL`·`JUDGE_MODEL`·`USE_SEARCH_CACHE`(선택). 실제 키는 커밋 금지.
 - LLM은 `llm.py`로만 호출: `generate(prompt)`, `structured(prompt, PydanticModel)`, `StructuredClient()`(4번 분류 함수에 그대로 주입), `load_prompt(name)`. 실패 시 `LLMError("[E-1002] ...")` → 노드가 잡아서 빈 결과 처리.
 - Python **3.10 이상** (`state.py`의 `dict[...]`·`tuple[...]` 표기).
-- `requirements.txt`: 1차 통합 때 `pip freeze`로 버전 고정. 필요 패키지 — langgraph, langchain-openai, langchain-huggingface, langchain-community, pydantic, python-dotenv, tavily-python, pymupdf, faiss-cpu, sentence-transformers, PDF 라이브러리(6번)
+- `requirements.txt`: DAY 3 통합 환경(Python 3.11.15 / macOS)의 `pip freeze`로 직접 의존성을 `==` 고정 완료. 필요 패키지 — langgraph, langchain-core, langchain-openai, langchain-huggingface, langchain-community, langchain-text-splitters, pydantic, python-dotenv, tavily-python, pymupdf, faiss-cpu, sentence-transformers, PDF 라이브러리(6번)
 
 ---
 

@@ -129,6 +129,7 @@
 **적용 전략**
 - 논문 2편을 dense 임베딩으로 인덱싱해 FAISS에 보관, 인덱스는 캐시해 재실행 시 재사용
 - 검색 품질은 한국어 질문-정답 페이지 평가셋(12개)으로 Hit Rate@5, MRR 측정 → README Retrieval 지표에 기재
+- 측정 결과(2026-09-22, dense·MMR λ=0.7·Top-5): **Hit Rate@5 1.00, MRR@5 0.69** (TurboQuant 1.00 / 0.78, InfiniGen 1.00 / 0.60) — 12문항 모두 정답 페이지가 상위 5개 안에 검색되어 한국어 질의 → 영어 논문 교차 언어 검색이 동작함을 확인
 
 ---
 
@@ -393,7 +394,7 @@ flowchart TD
 - [x] 기술 2건 확정 (TurboQuant / InfiniGen)
 - [x] 선정 논문 PDF 페이지 수 확인 (TurboQuant 25p + InfiniGen 18p = 43p / 200p)
 - [x] 도메인 확정 — 데이터센터/클라우드 서빙 (0-3)
-- [ ] bge-m3 검색 평가 수치(Hit Rate@5, MRR) 측정 → B-3 및 README에 기재
+- [x] bge-m3 검색 평가 수치 측정 (Hit Rate@5 1.00, MRR@5 0.69) → B-3 반영, README 기재는 6번
 - [ ] 실제 그래프(`python app.py --mermaid`)를 README Architecture에 첨부
 - [x] v5: TRL 6·7·8 근거 예시 보수화, 충분성 조건 표현(지지·한계·반론) 정리, stance 정의
 - [x] TRL 추정 명시 문구 포함 (C-2)
