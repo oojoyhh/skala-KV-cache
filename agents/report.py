@@ -205,6 +205,33 @@ CHAPTERS = [
 ]
 
 
+def _synthesis_for_report(data: dict, cites: Citations, allowed_ids: set[str]) -> dict:
+    """State의 문자열 계약을 유지하며 종합 문장 끝의 출처를 cite로 변환한다."""
+    def cited_claim(text: str) -> dict | None:
+        match = re.fullmatch(r"(.*) \(출처: ([^)]+)\)", text, flags=re.DOTALL)
+        if not match:
+            return None
+        claim, raw_ids = match.groups()
+        ids = list(dict.fromkeys(s.strip() for s in raw_ids.split(",")))
+        # 일부 출처만 존재해도 문장 전체를 승인하지 않는다.
+        if not claim.strip() or any(s not in allowed_ids or _doc_id(s) not in cites.docs for s in ids):
+            return None
+        marks = list(dict.fromkeys(cites.cite(s) for s in ids))
+        return {"claim": claim, "cite": " ".join(marks)}
+
+    agreements = []
+    conflicts = []
+    for text in data.get("agreements", []):
+        item = cited_claim(text)
+        if item:
+            agreements.append(item)
+    for conflict in data.get("conflicts", []):
+        item = cited_claim(conflict["description"])
+        if item:
+            conflicts.append({k: conflict[k] for k in ("tech", "perspective_a", "perspective_b")} | item)
+    return {"agreements": agreements, "conflicts": conflicts}
+
+
 def _claims(data) -> list[str]:
     """LLM 실패 시 대체 본문: 입력에 있는 근거를 인용과 함께 나열."""
     if isinstance(data, list):
@@ -237,7 +264,12 @@ def build_blocks(state: State, generate) -> list[tuple]:
             continue
         if title.startswith("4-4"):
             body += [("note", STANCE_NOTE), ("table", domain_table(state, cites))]
-        text = _write(generate, head, title, length, instruction, cites.attach(pick(state)))
+        data = pick(state)
+        if title == "5. 시사점":
+            data = _synthesis_for_report(data, cites, evidence_source_ids(state))
+        else:
+            data = cites.attach(data)
+        text = _write(generate, head, title, length, instruction, data)
         if title.startswith("4-1") and "공개 정보 기반 추정" not in text:
             text += "\n" + TRL_NOTE
         if title.startswith("6.") and state.get("sufficiency", {}).get("reasons"):
