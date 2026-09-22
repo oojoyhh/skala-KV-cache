@@ -1,60 +1,22 @@
-"""Deterministic sufficiency checks for four completed evaluation perspectives."""
+"""Deterministic, config-based sufficiency checks for evaluation evidence."""
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping, Sequence
-from state import DomainResult, StakeholderResult, SufficiencyCheck
+
+import config
+from state import Evidence, PERSPECTIVES, State, SufficiencyCheck, TECHS, perspective_evidence
 
 
 class SufficiencyValidationError(ValueError):
-    """Raised when a SufficiencyCheck does not match its fixed contract."""
-
-
-def is_trl_sufficient(trl_estimate: object | None, evidence: Sequence[object] | None) -> bool:
-    """TRL is sufficient when an estimate and at least one supporting item exist.
-
-    The estimate value is intentionally not scored: a low TRL can still be a
-    well-supported assessment.
-    """
-
-    return trl_estimate is not None and bool(evidence)
-
-
-def is_market_sufficient(
-    market_result: object | None,
-    evidence: Sequence[object] | None,
-) -> bool:
-    """Market is sufficient when an evaluation result and support both exist."""
-
-    return market_result is not None and bool(evidence)
-
-
-def _missing_stakeholder_groups(result: StakeholderResult) -> list[str]:
-    return [
-        group
-        for group in ("competitors", "adopters_devs", "investors")
-        if not result[group]
-    ]
-
-
-def _missing_domain_axes(result: DomainResult) -> list[str]:
-    return [
-        axis
-        for axis in (
-            "cost",
-            "throughput",
-            "model_quality",
-            "transfer_overhead",
-            "deployment_barrier",
-        )
-        if not result[axis]
-    ]
+    """Raised when a SufficiencyCheck does not match the State contract."""
 
 
 def validate_sufficiency_check(check: Mapping[str, object]) -> SufficiencyCheck:
-    """Validate the exact fixed output contract and reason/bool consistency."""
+    """Validate the fixed output shape and its bool/reason consistency."""
 
-    required_fields = {"trl", "market", "stakeholder", "domain", "reasons"}
+    required_fields = {*PERSPECTIVES, "reasons"}
     if set(check) != required_fields:
         raise SufficiencyValidationError(
             f"SufficiencyCheck fields must be exactly {sorted(required_fields)}."
@@ -62,26 +24,19 @@ def validate_sufficiency_check(check: Mapping[str, object]) -> SufficiencyCheck:
 
     reasons = check["reasons"]
     if not isinstance(reasons, dict) or not all(
-        isinstance(key, str) and isinstance(value, str) and value
+        isinstance(key, str) and key in PERSPECTIVES and isinstance(value, str) and value
         for key, value in reasons.items()
     ):
-        raise SufficiencyValidationError("reasons must be a dict[str, non-empty str].")
+        raise SufficiencyValidationError("reasons must be a dict of non-empty perspective reasons.")
 
-    for perspective in ("trl", "market", "stakeholder", "domain"):
+    for perspective in PERSPECTIVES:
         value = check[perspective]
         if type(value) is not bool:
             raise SufficiencyValidationError(f"{perspective} must be a bool.")
-        has_reason = perspective in reasons
-        if not value and not has_reason:
-            raise SufficiencyValidationError(f"{perspective}=False requires a reason.")
-        if value and has_reason:
+        if value and perspective in reasons:
             raise SufficiencyValidationError(f"{perspective}=True must not have a reason.")
-
-    unknown_reasons = set(reasons) - {"trl", "market", "stakeholder", "domain"}
-    if unknown_reasons:
-        raise SufficiencyValidationError(
-            f"reasons has unknown perspectives: {sorted(unknown_reasons)}"
-        )
+        if not value and perspective not in reasons:
+            raise SufficiencyValidationError(f"{perspective}=False requires a reason.")
 
     return {
         "trl": check["trl"],
@@ -92,52 +47,58 @@ def validate_sufficiency_check(check: Mapping[str, object]) -> SufficiencyCheck:
     }
 
 
-def evaluate_sufficiency(
-    stakeholder_result: StakeholderResult,
-    domain_result: DomainResult,
-    *,
-    trl_estimate: object | None,
-    trl_evidence: Sequence[object] | None,
-    market_result: object | None,
-    market_evidence: Sequence[object] | None,
-) -> SufficiencyCheck:
-    """Create a deterministic SufficiencyCheck without routing or side effects."""
+def _evidence_status(evidence: Sequence[Evidence], perspective: str) -> tuple[bool, str]:
+    """Apply the shared rubric to one technology in one perspective."""
 
-    trl = is_trl_sufficient(trl_estimate, trl_evidence)
-    market = is_market_sufficient(market_result, market_evidence)
-    missing_groups = _missing_stakeholder_groups(stakeholder_result)
-    missing_axes = _missing_domain_axes(domain_result)
-    stakeholder = not missing_groups
-    domain = not missing_axes
+    if perspective == "trl":
+        count = len(evidence)
+        return count >= config.MIN_TRL_EVIDENCE, f"TRL 근거 {count}개"
 
+    stance_counts = Counter(item["stance"] for item in evidence)
+    source_counts = Counter(item["source_id"] for item in evidence)
+    total = len(evidence)
+    top_share = max(source_counts.values(), default=0) / max(total, 1)
+
+    problems: list[str] = []
+    if total < config.MIN_EVIDENCE:
+        problems.append(f"Evidence {total}개")
+    if stance_counts["positive"] < config.MIN_POSITIVE:
+        problems.append("지지(positive) 근거 미확인")
+    if stance_counts["negative"] < config.MIN_NEGATIVE:
+        problems.append("반론 근거 미확인(negative 0건)")
+    if top_share > config.SAME_SOURCE_CAP:
+        problems.append(f"한 출처 비율 {top_share:.0%}")
+    return not problems, ", ".join(problems)
+
+
+def evaluate_sufficiency(state: State) -> SufficiencyCheck:
+    """Evaluate all perspectives without routing, retries, or State mutation."""
+
+    values: dict[str, bool] = {}
     reasons: dict[str, str] = {}
-    if not trl:
-        reasons["trl"] = "TRL 추정값 또는 이를 뒷받침하는 Evidence가 없음"
-    if not market:
-        reasons["market"] = "시장 평가 결과 또는 이를 뒷받침하는 Evidence가 없음"
-    if not stakeholder:
-        reasons["stakeholder"] = f"{', '.join(missing_groups)} Evidence가 없음"
-    if not domain:
-        reasons["domain"] = f"{', '.join(missing_axes)} Evidence가 없음"
+    for perspective in PERSPECTIVES:
+        insufficient: list[str] = []
+        for tech in TECHS:
+            ok, reason = _evidence_status(perspective_evidence(state, perspective, tech), perspective)
+            if not ok:
+                insufficient.append(f"{tech}: {reason}")
+        values[perspective] = not insufficient
+        if insufficient:
+            # Keep the fixture's separator as the public query-hint format.
+            reasons[perspective] = " / ".join(insufficient)
 
-    return validate_sufficiency_check(
-        {
-            "trl": trl,
-            "market": market,
-            "stakeholder": stakeholder,
-            "domain": domain,
-            "reasons": reasons,
-        }
-    )
+    return validate_sufficiency_check({**values, "reasons": reasons})
 
 
 def needs_retry(check: SufficiencyCheck) -> bool:
-    """Return whether any perspective remains insufficient; do not mutate state."""
+    """Return whether any perspective is insufficient; do not mutate State."""
 
-    return not all(check[perspective] for perspective in ("trl", "market", "stakeholder", "domain"))
+    return not all(check[perspective] for perspective in PERSPECTIVES)
 
 
-def can_retry(retry_count: int, max_iterations: int) -> bool:
-    """Return whether the caller may try again; do not increment retry_count."""
+def check_node(state: State) -> dict:
+    """Return the sufficiency result and increment retry_count only when needed."""
 
-    return retry_count < max_iterations
+    sufficiency = evaluate_sufficiency(state)
+    retry_count = state.get("retry_count", 0) + (1 if needs_retry(sufficiency) else 0)
+    return {"sufficiency": sufficiency, "retry_count": retry_count}

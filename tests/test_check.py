@@ -1,116 +1,215 @@
+"""Unit tests for the deterministic, State-based sufficiency node."""
+
+from __future__ import annotations
+
+import copy
 import unittest
 
-from agents.check import can_retry, evaluate_sufficiency, needs_retry
-from agents.domain import DomainResult, Evidence as DomainEvidence
-from agents.stakeholder import Evidence as StakeholderEvidence, StakeholderResult
+import config
+from agents.check import check_node, evaluate_sufficiency, needs_retry
+from state import Evidence, State, TECHS
+from tests.fixtures import expected_sufficiency, sample_state_after_eval
 
 
-def evidence(source_id: str) -> StakeholderEvidence:
-    return {"claim": f"Claim from {source_id}", "source_id": source_id, "stance": "neutral"}
+def general_evidence(
+    count: int | None = None,
+    *,
+    stances: list[str] | None = None,
+    source_ids: list[str] | None = None,
+) -> list[Evidence]:
+    """Build test-only Evidence with no dependency on an external service."""
+
+    total = count if count is not None else config.MIN_EVIDENCE
+    if stances is None:
+        stances = (
+            ["positive"] * config.MIN_POSITIVE
+            + ["negative"] * config.MIN_NEGATIVE
+            + ["neutral"] * max(0, total - config.MIN_POSITIVE - config.MIN_NEGATIVE)
+        )
+    return [
+        {
+            "claim": f"test claim {index}",
+            "source_id": source_ids[index] if source_ids else f"web:test-{index}",
+            "stance": stance,
+        }
+        for index, stance in enumerate(stances[:total])
+    ]
 
 
-def complete_stakeholder_result() -> StakeholderResult:
-    return {
-        "competitors": [evidence("stakeholder-competitors")],
-        "adopters_devs": [evidence("stakeholder-adopters")],
-        "investors": [evidence("stakeholder-investors")],
-        "summary": "Evidence exists for each stakeholder group.",
-    }
+def set_perspective_evidence(
+    state: State,
+    perspective: str,
+    tech: str,
+    evidence: list[Evidence],
+) -> None:
+    """Replace all Evidence for one selected perspective and technology."""
+
+    if perspective == "trl":
+        state["trl_result"][tech]["evidence"] = evidence
+    elif perspective == "market":
+        result = state["market_result"][tech]
+        result["market_size_growth"], result["adoption"], result["ecosystem"] = evidence, [], []
+    elif perspective == "stakeholder":
+        result = state["stakeholder_result"][tech]
+        result["competitors"], result["adopters_devs"], result["investors"] = evidence, [], []
+    elif perspective == "domain":
+        result = state["domain_result"][tech]
+        result["cost"], result["throughput"], result["model_quality"] = evidence, [], []
+        result["transfer_overhead"], result["deployment_barrier"] = [], []
+    else:  # pragma: no cover - guards test helper misuse.
+        raise ValueError(f"Unknown perspective: {perspective}")
 
 
-def complete_domain_result() -> DomainResult:
-    domain_evidence: DomainEvidence = evidence("domain")
-    return {
-        "domain": "datacenter/cloud serving",
-        "cost": [domain_evidence],
-        "throughput": [domain_evidence],
-        "model_quality": [domain_evidence],
-        "transfer_overhead": [domain_evidence],
-        "deployment_barrier": [domain_evidence],
-        "summary": "Evidence exists for each domain axis.",
-    }
+class CheckNodeTests(unittest.TestCase):
+    def state(self, sufficient: bool = True) -> State:
+        return copy.deepcopy(sample_state_after_eval(sufficient=sufficient))
 
+    def test_sufficient_fixture_matches_oracle(self) -> None:
+        state = self.state(True)
+        self.assertEqual(check_node(state)["sufficiency"], expected_sufficiency(state))
 
-class SufficiencyCheckTests(unittest.TestCase):
-    def evaluate(
-        self,
-        stakeholder_result: StakeholderResult | None = None,
-        domain_result: DomainResult | None = None,
-        *,
-        trl_estimate: object | None = 5,
-        trl_evidence: list[object] | None = None,
-        market_result: object | None = {"outlook": "neutral"},
-        market_evidence: list[object] | None = None,
-    ):
-        return evaluate_sufficiency(
-            stakeholder_result or complete_stakeholder_result(),
-            domain_result or complete_domain_result(),
-            trl_estimate=trl_estimate,
-            trl_evidence=trl_evidence if trl_evidence is not None else [evidence("trl")],
-            market_result=market_result,
-            market_evidence=market_evidence if market_evidence is not None else [evidence("market")],
+    def test_insufficient_fixture_matches_oracle(self) -> None:
+        state = self.state(False)
+        self.assertEqual(check_node(state)["sufficiency"], expected_sufficiency(state))
+
+    def test_sufficient_state_does_not_increment_retry_count(self) -> None:
+        state = self.state(True)
+        state["retry_count"] = 4
+        self.assertEqual(check_node(state)["retry_count"], 4)
+
+    def test_insufficient_state_increments_retry_count_once(self) -> None:
+        state = self.state(False)
+        self.assertEqual(check_node(state)["retry_count"], 2)
+
+    def test_retry_count_one_becomes_two_when_still_insufficient(self) -> None:
+        state = self.state(False)
+        state["retry_count"] = 1
+        self.assertEqual(check_node(state)["retry_count"], 2)
+
+    def test_retry_count_two_becomes_three_without_ending_workflow(self) -> None:
+        state = self.state(False)
+        state["retry_count"] = config.MAX_RETRY
+        update = check_node(state)
+        self.assertEqual(update["retry_count"], config.MAX_RETRY + 1)
+        self.assertTrue(needs_retry(update["sufficiency"]))
+
+    def test_trl_with_too_few_evidence_is_insufficient(self) -> None:
+        state = self.state(True)
+        set_perspective_evidence(state, "trl", "TurboQuant", general_evidence(config.MIN_TRL_EVIDENCE - 1))
+        self.assertFalse(check_node(state)["sufficiency"]["trl"])
+
+    def test_low_trl_level_is_irrelevant_when_evidence_is_sufficient(self) -> None:
+        state = self.state(True)
+        state["trl_result"]["TurboQuant"]["level"] = 1
+        set_perspective_evidence(state, "trl", "TurboQuant", general_evidence(config.MIN_TRL_EVIDENCE))
+        self.assertTrue(check_node(state)["sufficiency"]["trl"])
+
+    def test_general_perspective_with_too_few_evidence_is_insufficient(self) -> None:
+        state = self.state(True)
+        set_perspective_evidence(state, "market", "TurboQuant", general_evidence(config.MIN_EVIDENCE - 1))
+        self.assertFalse(check_node(state)["sufficiency"]["market"])
+
+    def test_missing_positive_evidence_is_insufficient(self) -> None:
+        state = self.state(True)
+        set_perspective_evidence(
+            state,
+            "market",
+            "TurboQuant",
+            general_evidence(stances=["negative", "neutral"] * (config.MIN_EVIDENCE // 2)),
+        )
+        self.assertFalse(check_node(state)["sufficiency"]["market"])
+
+    def test_missing_negative_evidence_is_insufficient(self) -> None:
+        state = self.state(True)
+        set_perspective_evidence(
+            state,
+            "market",
+            "TurboQuant",
+            general_evidence(stances=["positive", "neutral"] * (config.MIN_EVIDENCE // 2)),
+        )
+        self.assertFalse(check_node(state)["sufficiency"]["market"])
+
+    def test_source_share_above_cap_is_insufficient(self) -> None:
+        state = self.state(True)
+        total = config.MIN_EVIDENCE
+        source_ids = ["web:repeated"] * (total - 1) + ["web:other"]
+        set_perspective_evidence(state, "domain", "TurboQuant", general_evidence(total, source_ids=source_ids))
+        self.assertFalse(check_node(state)["sufficiency"]["domain"])
+
+    def test_source_share_equal_to_cap_is_allowed(self) -> None:
+        state = self.state(True)
+        total = config.MIN_EVIDENCE
+        source_ids = ["web:left"] * (total // 2) + ["web:right"] * (total // 2)
+        set_perspective_evidence(state, "domain", "TurboQuant", general_evidence(total, source_ids=source_ids))
+        self.assertTrue(check_node(state)["sufficiency"]["domain"])
+
+    def test_empty_stakeholder_group_does_not_fail_aggregate_rubric(self) -> None:
+        state = self.state(True)
+        evidence = general_evidence()
+        result = state["stakeholder_result"]["TurboQuant"]
+        result["competitors"], result["adopters_devs"], result["investors"] = [], evidence[:2], evidence[2:]
+        self.assertTrue(check_node(state)["sufficiency"]["stakeholder"])
+
+    def test_empty_domain_axis_does_not_fail_aggregate_rubric(self) -> None:
+        state = self.state(True)
+        evidence = general_evidence()
+        result = state["domain_result"]["TurboQuant"]
+        result["cost"], result["throughput"], result["model_quality"] = evidence[:2], evidence[2:], []
+        result["transfer_overhead"], result["deployment_barrier"] = [], []
+        self.assertTrue(check_node(state)["sufficiency"]["domain"])
+
+    def test_one_technology_insufficient_makes_perspective_false(self) -> None:
+        state = self.state(True)
+        set_perspective_evidence(state, "stakeholder", "InfiniGen", general_evidence(config.MIN_EVIDENCE - 1))
+        result = check_node(state)["sufficiency"]
+        self.assertFalse(result["stakeholder"])
+        self.assertIn("InfiniGen", result["reasons"]["stakeholder"])
+
+    def test_two_technologies_insufficient_are_both_named_in_reason(self) -> None:
+        state = self.state(True)
+        for tech in TECHS:
+            set_perspective_evidence(state, "market", tech, general_evidence(config.MIN_EVIDENCE - 1))
+        reason = check_node(state)["sufficiency"]["reasons"]["market"]
+        self.assertIn("TurboQuant", reason)
+        self.assertIn("InfiniGen", reason)
+
+    def test_different_technology_gaps_remain_in_their_perspective_reasons(self) -> None:
+        state = self.state(True)
+        set_perspective_evidence(
+            state,
+            "stakeholder",
+            "TurboQuant",
+            general_evidence(config.MIN_EVIDENCE - 1),
+        )
+        set_perspective_evidence(
+            state,
+            "domain",
+            "InfiniGen",
+            general_evidence(config.MIN_EVIDENCE - 1),
         )
 
-    def test_all_four_perspectives_are_sufficient(self) -> None:
-        check = self.evaluate()
+        result = check_node(state)["sufficiency"]
 
-        self.assertEqual(check, {"trl": True, "market": True, "stakeholder": True, "domain": True, "reasons": {}})
+        self.assertFalse(result["stakeholder"])
+        self.assertFalse(result["domain"])
+        self.assertIn("TurboQuant", result["reasons"]["stakeholder"])
+        self.assertIn("InfiniGen", result["reasons"]["domain"])
 
-    def test_missing_investor_evidence_makes_stakeholder_insufficient(self) -> None:
-        stakeholder = complete_stakeholder_result()
-        stakeholder["investors"] = []
+    def test_missing_result_key_is_insufficient_not_a_crash(self) -> None:
+        state = self.state(True)
+        del state["domain_result"]
+        result = check_node(state)["sufficiency"]
+        self.assertFalse(result["domain"])
 
-        check = self.evaluate(stakeholder_result=stakeholder)
-
-        self.assertFalse(check["stakeholder"])
-        self.assertIn("investors", check["reasons"]["stakeholder"])
-
-    def test_missing_transfer_overhead_makes_domain_insufficient(self) -> None:
-        domain = complete_domain_result()
-        domain["transfer_overhead"] = []
-
-        check = self.evaluate(domain_result=domain)
-
-        self.assertFalse(check["domain"])
-        self.assertIn("transfer_overhead", check["reasons"]["domain"])
-
-    def test_stakeholder_and_domain_can_both_be_insufficient(self) -> None:
-        stakeholder = complete_stakeholder_result()
-        stakeholder["investors"] = []
-        domain = complete_domain_result()
-        domain["deployment_barrier"] = []
-
-        check = self.evaluate(stakeholder, domain)
-
-        self.assertFalse(check["stakeholder"])
-        self.assertFalse(check["domain"])
-        self.assertEqual(set(check["reasons"]), {"stakeholder", "domain"})
-
-    def test_low_trl_with_estimate_and_evidence_is_sufficient(self) -> None:
-        check = self.evaluate(trl_estimate=2, trl_evidence=[evidence("trl-low")])
-
-        self.assertTrue(check["trl"])
-        self.assertNotIn("trl", check["reasons"])
-
-    def test_negative_market_with_evidence_is_sufficient(self) -> None:
-        check = self.evaluate(
-            market_result={"outlook": "negative"},
-            market_evidence=[evidence("market-negative")],
+    def test_reasons_contain_only_false_perspectives(self) -> None:
+        result = evaluate_sufficiency(self.state(False))
+        self.assertEqual(
+            set(result["reasons"]),
+            {perspective for perspective in ("trl", "market", "stakeholder", "domain") if not result[perspective]},
         )
 
-        self.assertTrue(check["market"])
-        self.assertNotIn("market", check["reasons"])
-
-    def test_needs_retry_depends_on_any_false_perspective(self) -> None:
-        self.assertFalse(needs_retry(self.evaluate()))
-        stakeholder = complete_stakeholder_result()
-        stakeholder["competitors"] = []
-        self.assertTrue(needs_retry(self.evaluate(stakeholder_result=stakeholder)))
-
-    def test_can_retry_obeys_the_iteration_limit(self) -> None:
-        self.assertTrue(can_retry(retry_count=1, max_iterations=2))
-        self.assertFalse(can_retry(retry_count=2, max_iterations=2))
-        self.assertFalse(can_retry(retry_count=3, max_iterations=2))
+    def test_node_returns_exactly_its_own_state_keys(self) -> None:
+        self.assertEqual(set(check_node(self.state(True))), {"sufficiency", "retry_count"})
 
 
 if __name__ == "__main__":

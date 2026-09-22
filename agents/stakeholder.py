@@ -6,10 +6,11 @@ the design specification. It does not assess sufficiency or control workflow.
 
 from __future__ import annotations
 
-from typing import Protocol, Sequence
+from typing import Any, Callable, Protocol, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
-from state import Evidence, StakeholderResult, Stance
+import config
+from state import Evidence, Reference, StakeholderResult, State, Stance, TechName, retry_hint
 
 
 class EvidenceSelection(BaseModel):
@@ -51,25 +52,13 @@ class StructuredOutputClient(Protocol):
 def build_stakeholder_prompt(technology: str, evidence: Sequence[Evidence]) -> str:
     """Build a prompt that permits classification, not invention, of Evidence."""
 
+    from llm import load_prompt
+
     evidence_text = "\n".join(
         f"- claim: {item['claim']} | source_id: {item['source_id']} | stance: {item['stance']}"
         for item in evidence
     ) or "(No Evidence was provided.)"
-
-    return f"""Classify the supplied Evidence about {technology} into exactly these
-stakeholder groups: competitors, adopters_devs, investors.
-
-Rules:
-- Select and copy only Evidence supplied below. Do not create, edit, combine, or
-  infer new claim/source_id/stance values.
-- Use only the stance values positive, negative, or neutral.
-- A group with no relevant Evidence must be an empty list.
-- Do not assess whether evidence is sufficient, request retry, choose a next
-  action, or judge whether the technology is good or bad.
-
-Supplied Evidence:
-{evidence_text}
-"""
+    return load_prompt("stakeholder").format(technology=technology, evidence=evidence_text)
 
 
 def _build_stakeholder_summary(groups: dict[str, list[Evidence]]) -> str:
@@ -145,3 +134,126 @@ def evaluate_stakeholders(
     prompt = build_stakeholder_prompt(technology, evidence)
     response = structured_output_client.invoke(prompt, StakeholderStructuredResponse)
     return validate_stakeholder_result(response, evidence)
+
+
+def _empty_result(error: str) -> StakeholderResult:
+    return {"competitors": [], "adopters_devs": [], "investors": [], "summary": error}
+
+
+def _stakeholder_queries(technology: TechName, hint: str) -> list[tuple[str, Stance]]:
+    """Create distinct support and counter-evidence queries for one technology."""
+
+    topics = (
+        "competitors technology ecosystem",
+        "enterprise adopters developers deployment",
+        "investors funding industry response",
+    )
+    retry_context = f" retry focus: {hint}" if hint else ""
+    queries: list[tuple[str, Stance]] = []
+    for stance, intent in (
+        ("positive", "adoption support evidence"),
+        ("negative", "limitations challenges counterevidence"),
+    ):
+        for index in range(config.QUERIES_PER_STANCE):
+            topic = topics[index % len(topics)]
+            queries.append(
+                (f"{technology} KV cache optimization {topic} {intent}{retry_context}", stance)
+            )
+    return queries
+
+
+def _record_to_reference(record: dict[str, Any]) -> Reference:
+    """Use the shared converter when available; fake-search tests use this fallback."""
+
+    try:
+        from tools.web_search import to_reference
+    except ModuleNotFoundError:
+        return {
+            "source_id": record["source_id"], "kind": record["kind"], "author": record["author"],
+            "date": record["date"], "title": record["title"], "venue": record["venue"],
+            "url": record["url"], "used_by": record["used_by"], "stance": record["stance"],
+        }
+    return to_reference(record)
+
+
+def _resolve_search_fn(search_fn: Callable[..., list[dict[str, Any]]] | None) -> Callable[..., list[dict[str, Any]]]:
+    if search_fn is not None:
+        return search_fn
+    from tools.web_search import search_web
+
+    return search_web
+
+
+def stakeholder_node(
+    state: State,
+    *,
+    search_fn: Callable[..., list[dict[str, Any]]] | None = None,
+    client: StructuredOutputClient | None = None,
+) -> dict:
+    """Search and classify stakeholder Evidence for both selected technologies."""
+
+    try:
+        search = _resolve_search_fn(search_fn)
+    except Exception as exc:  # noqa: BLE001 - unavailable search dependency is E-1002
+        message = f"[E-1002] 검색 도구 사용 실패: {exc}"
+        return {
+            "stakeholder_result": {
+                state["tech_sw"]: _empty_result(message),
+                state["tech_hw"]: _empty_result(message),
+            },
+            "references": [],
+        }
+
+    if client is None:
+        from llm import StructuredClient
+
+        client = StructuredClient()
+
+    results: dict[TechName, StakeholderResult] = {}
+    references: list[Reference] = []
+    hint = retry_hint(state, "stakeholder")
+    for technology in (state["tech_sw"], state["tech_hw"]):
+        candidates: list[Evidence] = []
+        references_by_id: dict[str, Reference] = {}
+        last_query = ""
+        try:
+            for query, stance in _stakeholder_queries(technology, hint):
+                last_query = query
+                for record in search(
+                    query,
+                    stance,
+                    max_results=config.WEB_SEARCH_MAX_RESULTS,
+                    used_by="stakeholder",
+                ):
+                    reference = _record_to_reference(record)
+                    references_by_id[reference["source_id"]] = reference
+                    candidates.append(
+                        {
+                            "claim": record["content"],
+                            "source_id": reference["source_id"],
+                            "stance": stance,
+                        }
+                    )
+        except Exception as exc:  # noqa: BLE001 - external search failure must not stop the graph
+            results[technology] = _empty_result(f"[E-1002] 검색 실패: {exc}")
+            continue
+
+        if not candidates:
+            results[technology] = _empty_result(f"[E-1001] 검색 결과 없음: {last_query}")
+            continue
+
+        try:
+            result = evaluate_stakeholders(technology, candidates, client)
+        except Exception as exc:  # noqa: BLE001 - structured LLM/validation failure is E-1002
+            results[technology] = _empty_result(f"[E-1002] 이해관계자 분류 실패: {exc}")
+            continue
+
+        results[technology] = result
+        used_ids = {
+            evidence["source_id"]
+            for group in ("competitors", "adopters_devs", "investors")
+            for evidence in result[group]
+        }
+        references.extend(reference for source_id, reference in references_by_id.items() if source_id in used_ids)
+
+    return {"stakeholder_result": results, "references": references}
