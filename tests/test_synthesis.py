@@ -103,16 +103,29 @@ def test_upstream_limits_errors_and_uncertainty_survive_api_failure():
 
 @pytest.mark.parametrize("field,value", [
     ("tech", "OtherTech"), ("perspective_a", "research"),
-    ("perspective_b", "market"), ("description", "   "),
+    ("perspective_a", "InfiniGen"), ("description", "   "),
     ("evidence_a", []),
 ])
 def test_invalid_structured_response_falls_back(field, value):
+    """스키마 자체가 깨진 응답은 draft 전체를 버리고 E-1002를 남긴다."""
     state = sample_state_after_eval()
     item = finding(state)
     item[field] = value
     out = synthesis_node(state, client=FakeClient({"agreements": [], "conflicts": [item]}))["synthesis"]
     assert out["agreements"] == out["conflicts"] == []
     assert any("E-1002" in text for text in out["limitations"])
+
+
+def test_same_perspective_finding_is_dropped_per_item():
+    """관점이 같은 항목은 관점 간 비교가 아니므로 그 항목만 버리고 나머지는 살린다."""
+    state = sample_state_after_eval()
+    bad = finding(state, a="market", b="market")
+    client = FakeClient({"agreements": [finding(state)], "conflicts": [bad]})
+    out = synthesis_node(state, client=client)["synthesis"]
+    assert len(out["agreements"]) == 1
+    assert out["conflicts"] == []
+    assert not any("E-1002" in text for text in out["limitations"])
+    assert any("제외함" in text for text in out["limitations"])
 
 
 @pytest.mark.parametrize("source_kind", ["invented", "wrong_tech", "wrong_perspective"])

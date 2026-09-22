@@ -121,6 +121,7 @@ StructuredClient(role="judge")                    # .invoke(prompt, response_mod
 - graph 라우팅: 모두 충분 → `synthesis` / 불충분 & `retry_count ≤ MAX_RETRY` → 부족 관점 노드만 재실행 / `retry_count > MAX_RETRY` → `synthesis` (E-1005). 결과적으로 재조사는 최대 `MAX_RETRY`(=2)회 (설계서 D-2 "retry_count > N"과 동일).
 - `synthesis_node`는 `sufficiency.reasons`에 남은 부족 관점을 `synthesis.limitations`에 옮겨 적는다 (설계서 A: 평가 종합 입력에 sufficiency 포함).
 - 판정 기준 (설계서 D-2 기준, 수치는 `config.py`):
+  - 근거 개수는 `state.perspective_evidence()`가 돌려주는 값으로 센다. 같은 `(source_id, claim)`이 한 관점의 여러 필드에 들어가면(예: 같은 근거를 이해관계자 두 그룹에 배치) **한 번만 센다** — 중복 계수는 근거 부풀리기이므로. 충분성 검사·평가 종합·보고서가 같은 함수를 쓰므로 세 곳의 근거 개수가 항상 같다.
   - 관점별로 **두 기술 각각** 충족해야 True
   - Evidence ≥ `MIN_EVIDENCE`(4), 지지(positive) ≥ 1 · 한계·반론(negative) ≥ 1 — stance 정의는 설계서 v5 D-1 / `state.py` 주석
   - 한 source_id가 관점 근거의 `SAME_SOURCE_CAP`(50%) 초과 시 불충분
