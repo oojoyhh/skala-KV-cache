@@ -37,7 +37,7 @@ KV cache 병목을 반대 방향에서 푸는 SW 기술(TurboQuant)과 HW 기술
 | Framework | LangGraph, LangChain, Python 3.11 |
 | LLM / Generator | gpt-4o-mini (OpenAI, temperature 0) — 요약·종합·보고서 문장 |
 | LLM / Judge | gpt-4o-mini (OpenAI, temperature 0) — 관련성 체크·근거 분류 |
-| Retrieval | FAISS (dense, MMR λ=0.7, Top-5) — Hit Rate@5 `[TBD]`, MRR `[TBD]` (한국어 질문 12개) |
+| Retrieval | FAISS (dense, MMR λ=0.7, Top-5) — **Hit Rate@5 1.00, MRR@5 0.69** (한국어 질문 12개, 기술당 6개 / MRR: TurboQuant 0.78, InfiniGen 0.60) |
 | Embedding | BAAI/bge-m3 (오픈소스, 로컬 실행) — 한국어 질의로 영어 논문을 찾는 교차 언어 검색 |
 | Web Search | Tavily |
 | Report | fpdf2 |
