@@ -49,6 +49,32 @@ _MARKET_QUERY_TEMPLATES: dict[Stance, tuple[str, ...]] = {
     ),
     "neutral": (),
 }
+_INFINIGEN_NAME_PATTERN = r"\binfini\s*gen\b"
+_INFINIGEN_RELEVANT_PATTERNS = (
+    r"\bkv[\s/-]*cache\b",
+    r"\bkey[\s/-]+value[\s/-]+cache\b",
+    r"\blarge language models?\b",
+    r"\bllms?\b",
+    r"\bgenerative inference\b",
+    r"\bdynamic kv cache management\b",
+    r"\bgpu memory\b",
+    r"\bhost memory\b",
+    r"\b(?:kv|cache) offload(?:ing)?\b",
+    r"\bprefetch(?:es|ed|ing)?\b",
+    r"\b(?:llm|inference) serving\b",
+    r"\bosdi\b",
+    r"\bseoul national university\b",
+)
+_INFINIGEN_UNRELATED_PATTERNS = (
+    r"\bprocedural (?:generation|generator|worlds?)\b",
+    r"\b3d scenes?\b",
+    r"\bphotorealistic worlds?\b",
+    r"\binfinite worlds?\b",
+    r"\bblender\b",
+    r"\bscene generation\b",
+    r"\bscene compositions?\b",
+    r"\bshapes?\b.{0,40}\btextures?\b.{0,40}\bmaterials?\b",
+)
 
 
 class MarketEvidenceSelection(BaseModel):
@@ -198,11 +224,39 @@ def _dedupe_records(records: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]
     return list(unique.values())
 
 
+def _technology_query_anchor(technology: TechName) -> str:
+    if technology == "InfiniGen":
+        return '"InfiniGen" "KV cache" LLM'
+    return technology
+
+
+def _is_relevant_candidate(technology: TechName, record: Mapping[str, Any]) -> bool:
+    """동명이인 3D 생성 프로젝트를 InfiniGen 후보에서 보수적으로 제외한다."""
+
+    if technology != "InfiniGen":
+        return True
+    reference = _record_reference(record)
+    text = " ".join(
+        (
+            reference.get("title", ""),
+            _content(record),
+            reference.get("venue", ""),
+            reference.get("author", ""),
+        )
+    )
+    if any(_contains(text, pattern) for pattern in _INFINIGEN_UNRELATED_PATTERNS):
+        return False
+    return _contains(text, _INFINIGEN_NAME_PATTERN) and any(
+        _contains(text, pattern) for pattern in _INFINIGEN_RELEVANT_PATTERNS
+    )
+
+
 def _query_specs(technology: TechName, trl_reason: str, market_reason: str) -> list[tuple[str, Stance, str]]:
     specs: list[tuple[str, Stance, str]] = []
+    query_technology = _technology_query_anchor(technology)
     for index in range(config.QUERIES_PER_STANCE):
         template = _TRL_QUERY_TEMPLATES[index % len(_TRL_QUERY_TEMPLATES)]
-        query = template.format(tech=technology)
+        query = template.format(tech=query_technology)
         if trl_reason:
             query += f" retry focus: {trl_reason} independent evidence"
         specs.append(("trl", "neutral", query))
@@ -210,7 +264,7 @@ def _query_specs(technology: TechName, trl_reason: str, market_reason: str) -> l
     for stance in ("positive", "negative"):
         templates = _MARKET_QUERY_TEMPLATES[stance]
         for index in range(config.QUERIES_PER_STANCE):
-            query = templates[index % len(templates)].format(tech=technology)
+            query = templates[index % len(templates)].format(tech=query_technology)
             if market_reason:
                 focus = (
                     "different sources deployment framework production usage"
@@ -248,13 +302,19 @@ def _search_for_technology(
         if not found:
             empty_count += 1
             continue
+        relevant_found = False
         for result in found:
             if not isinstance(result, Mapping):
                 continue
             record = dict(result)
             record["_perspective"] = perspective
             record["_query_stance"] = stance
+            if not _is_relevant_candidate(technology, record):
+                continue
             records.append(record)
+            relevant_found = True
+        if not relevant_found:
+            empty_count += 1
     return _dedupe_records(records), empty_count, error_count
 
 

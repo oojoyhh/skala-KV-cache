@@ -5,6 +5,8 @@
 - 새 Reference를 만들지 않는다.
 - claim과 source_id를 복사하거나 출력하지 말고, 반드시 제공된 S1, S2 등의 id만 선택한다.
 - id에 연결된 title과 content 전체를 근거로 분류하되 번역·의역·수치 보완을 하지 않는다.
+- 본 과제의 InfiniGen은 "InfiniGen: Efficient Generative Inference of Large Language Models with Dynamic KV Cache Management"(OSDI 2024)만 의미한다.
+- Princeton의 procedural generation·3D scene generation 프로젝트인 동명이인 Infinigen은 시장·TRL·채택·생태계 근거로 선택하지 않는다.
 - market_category는 market_size_growth, adoption, ecosystem, none 중 하나다.
 - 넓은 AI 인프라나 LLM 추론 시장 수치는 특정 기술 자체의 시장 규모로 분류하지 않는다.
 - stance는 실제 내용 기준으로 positive(지지), negative(한계·반론), neutral(중립·배경) 중 하나다. 검색 의도만 보고 negative를 만들지 않는다.

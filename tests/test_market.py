@@ -5,6 +5,8 @@ import config
 from agents.market import (
     MarketEvidenceItem,
     _inferred_trl_ceiling,
+    _is_relevant_candidate,
+    _query_specs,
     _trl_estimate,
     _validated_items,
     market_node,
@@ -274,6 +276,167 @@ def test_validated_korean_support_keeps_llm_positive_stance():
     items, failed = _validated_items("TurboQuant", [record], KoreanSupportClient())
     assert not failed
     assert items[0].stance == "positive"
+
+
+def test_infinigen_queries_keep_kv_cache_llm_anchors_on_initial_and_retry():
+    for trl_reason, market_reason in (
+        ("", ""),
+        ("InfiniGen: TRL Evidence 부족", "InfiniGen: 반론 근거 미확인"),
+    ):
+        specs = _query_specs("InfiniGen", trl_reason, market_reason)
+        assert {stance for _, stance, _ in specs} == {"neutral", "positive", "negative"}
+        for _, _, query in specs:
+            lowered = query.casefold()
+            assert "infinigen" in lowered
+            assert "kv cache" in lowered
+            assert "llm" in lowered or "large language model" in lowered
+
+
+def _infinigen_record(source_id, title, content, stance="neutral"):
+    return {
+        "source_id": source_id,
+        "kind": "web",
+        "author": "Example Author",
+        "date": "2026-01-01",
+        "title": title,
+        "venue": "example.org",
+        "url": f"https://example.org/{source_id.removeprefix('web:')}",
+        "used_by": ["market"],
+        "stance": stance,
+        "content": content,
+    }
+
+
+def test_infinigen_relevance_rejects_photorealistic_procedural_world():
+    wrong = _infinigen_record(
+        "web:wrong3d001",
+        "Infinite Photorealistic Worlds using Procedural Generation",
+        "Princeton researchers introduce Infinigen, a procedural generator for infinite "
+        "photorealistic 3D scenes, shapes, textures and materials.",
+    )
+    assert not _is_relevant_candidate("InfiniGen", wrong)
+
+
+def test_infinigen_relevance_rejects_blog_style_3d_project_by_content():
+    wrong = _infinigen_record(
+        "web:wrong3d002",
+        "Princeton's Infinigen can generate unlimited 3D scenes",
+        "Procedural generation with Blender creates shapes, materials, and photorealistic "
+        "environments.",
+    )
+    assert not _is_relevant_candidate("InfiniGen", wrong)
+
+
+def test_infinigen_relevance_accepts_kv_cache_paper_and_market_article():
+    paper = _infinigen_record(
+        "web:rightkv001",
+        "InfiniGen: Efficient Generative Inference of Large Language Models with Dynamic "
+        "KV Cache Management",
+        "InfiniGen offloads KV cache to host memory and dynamically prefetches entries for "
+        "LLM inference.",
+    )
+    market_article = _infinigen_record(
+        "web:rightkv002",
+        "InfiniGen-style offloading reduces serving memory pressure",
+        "An LLM serving system uses InfiniGen-style KV cache offloading to reduce GPU "
+        "memory pressure.",
+    )
+    assert _is_relevant_candidate("InfiniGen", paper)
+    assert _is_relevant_candidate("InfiniGen", market_article)
+
+
+def test_infinigen_relevance_does_not_reject_princeton_word_alone():
+    relevant = _infinigen_record(
+        "web:rightkv003",
+        "Princeton seminar reviews InfiniGen for LLM inference",
+        "The seminar discusses KV cache offloading to host memory for LLM serving.",
+    )
+    assert _is_relevant_candidate("InfiniGen", relevant)
+
+
+def test_market_node_removes_3d_infinigen_before_llm_evidence_and_references():
+    calls = 0
+    wrong_ids = {"web:wrong3d001", "web:wrong3d002"}
+    correct_ids = set()
+
+    def mixed_search(query, stance="neutral", **kwargs):
+        nonlocal calls
+        if "InfiniGen" not in query:
+            return [_record(query, stance)]
+        calls += 1
+        paper_id = f"web:rightpaper{calls:02d}"
+        market_id = f"web:rightmarket{calls:02d}"
+        correct_ids.update((paper_id, market_id))
+        return [
+            _infinigen_record(
+                "web:wrong3d001",
+                "Infinite Photorealistic Worlds using Procedural Generation",
+                "Princeton Infinigen generates photorealistic 3D scenes with procedural "
+                "generation, shapes, textures, and materials.",
+                stance,
+            ),
+            _infinigen_record(
+                paper_id,
+                "InfiniGen: Efficient Generative Inference of Large Language Models with "
+                "Dynamic KV Cache Management",
+                "InfiniGen prototype offloads KV cache to host memory and prefetches entries "
+                "for LLM inference benchmark evaluation.",
+                stance,
+            ),
+            _infinigen_record(
+                "web:wrong3d002",
+                "Princeton's Infinigen can generate unlimited 3D scenes",
+                "The Blender procedural generator creates shapes and textures for scene "
+                "generation.",
+                stance,
+            ),
+            _infinigen_record(
+                market_id,
+                "InfiniGen-style KV cache offloading for LLM serving",
+                "An LLM serving framework uses InfiniGen-style KV cache offloading to reduce "
+                "GPU memory pressure and deployment overhead.",
+                stance,
+            ),
+        ]
+
+    class CapturingClient(FakeStructuredClient):
+        def __init__(self):
+            self.prompts = []
+
+        def invoke(self, prompt, response_model):
+            self.prompts.append(prompt)
+            return super().invoke(prompt, response_model)
+
+    client = CapturingClient()
+    result = _run(search_fn=mixed_search, client=client)
+    infinigen_evidence = list(result["trl_result"]["InfiniGen"]["evidence"])
+    for field in ("market_size_growth", "adoption", "ecosystem"):
+        infinigen_evidence.extend(result["market_result"]["InfiniGen"][field])
+    evidence_ids = {evidence["source_id"] for evidence in infinigen_evidence}
+    reference_ids = {reference["source_id"] for reference in result["references"]}
+    infinigen_prompt = next(
+        prompt for prompt in client.prompts if "대상 기술: InfiniGen" in prompt
+    )
+
+    assert evidence_ids & correct_ids
+    assert not evidence_ids & wrong_ids
+    assert reference_ids & correct_ids
+    assert not reference_ids & wrong_ids
+    assert "Infinite Photorealistic Worlds" not in infinigen_prompt
+    assert "unlimited 3D scenes" not in infinigen_prompt
+    assert "Dynamic KV Cache Management" in infinigen_prompt
+    summary = result["market_result"]["InfiniGen"]["summary"].casefold()
+    assert all(
+        phrase not in summary
+        for phrase in (
+            "procedural generation",
+            "photorealistic worlds",
+            "unlimited 3d scenes",
+            "shapes",
+            "textures",
+            "materials",
+        )
+    )
 
 
 def test_unknown_short_id_only_drops_that_selection():
