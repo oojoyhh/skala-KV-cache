@@ -32,18 +32,6 @@ from tools.web_search import make_source_id, search_web, to_reference
 SearchFunction = Callable[..., list[dict]]
 MarketCategory = Literal["market_size_growth", "adoption", "ecosystem", "none"]
 
-_NEGATIVE_TERMS = re.compile(
-    r"\b(limit(?:ation|ed|s)?|barrier|concern|degrad(?:e|ation)|overhead|"
-    r"bottleneck|challenge|drawback|trade-?off|accuracy loss|not support(?:ed)?|"
-    r"not available|no production|operational burden)\b",
-    re.IGNORECASE,
-)
-_POSITIVE_TERMS = re.compile(
-    r"\b(adopt(?:ed|ion)?|support(?:ed|s)?|integrat(?:e|ed|ion)|improv(?:e|ed|ement)|"
-    r"speedup|reduce[ds]?|benefit|deploy(?:ed|ment)?|available|release[ds]?|growth)\b",
-    re.IGNORECASE,
-)
-
 _TRL_QUERY_TEMPLATES = (
     "{tech} official paper code reproducibility prototype LLM serving demonstration",
     "{tech} end-to-end serving benchmark pilot preview product customer deployment",
@@ -241,6 +229,9 @@ def _search_for_technology(
         except Exception:  # noqa: BLE001 - injected providers must not stop the graph
             error_count += 1
             continue
+        if getattr(found, "error_code", None):
+            error_count += 1
+            continue
         if not found:
             empty_count += 1
             continue
@@ -311,13 +302,6 @@ def _validated_items(
         if not claim or claim not in source_text:
             continue
 
-        text = f"{record.get('title', '')} {_content(record)}"
-        stance: Stance = item.stance
-        if stance == "negative" and not _NEGATIVE_TERMS.search(text):
-            stance = "neutral"
-        elif stance == "positive" and not _POSITIVE_TERMS.search(text):
-            stance = "neutral"
-
         key = (item.source_id, item.market_category)
         if key in seen:
             continue
@@ -326,7 +310,7 @@ def _validated_items(
             MarketEvidenceItem(
                 source_id=item.source_id,
                 claim=item.claim.strip(),
-                stance=stance,
+                stance=item.stance,
                 market_category=item.market_category,
                 trl_level=(
                     min(item.trl_level, _inferred_trl_ceiling(record))
@@ -355,8 +339,9 @@ def _trl_estimate(
     for item in items:
         if item.trl_level is None:
             continue
-        level_by_source[item.source_id] = max(level_by_source.get(item.source_id, 1), item.trl_level)
-        item_by_source.setdefault(item.source_id, item)
+        if item.trl_level > level_by_source.get(item.source_id, 0):
+            level_by_source[item.source_id] = item.trl_level
+            item_by_source[item.source_id] = item
 
     confirmed_level = 1
     for candidate in range(9, 0, -1):

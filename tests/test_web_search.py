@@ -66,12 +66,23 @@ def test_to_reference_excludes_content():
 def test_tavily_exception_returns_empty(monkeypatch, tmp_path):
     _configure(monkeypatch, tmp_path)
     client = FakeTavilyClient(error=RuntimeError("secret provider detail"))
-    assert search_web("query", "neutral", client=client) == []
+    results = search_web("query", "neutral", client=client)
+    assert results == []
+    assert results.error_code == "E-1002"
 
 
 def test_zero_results_returns_empty(monkeypatch, tmp_path):
     _configure(monkeypatch, tmp_path)
-    assert search_web("query", "neutral", client=FakeTavilyClient()) == []
+    results = search_web("query", "neutral", client=FakeTavilyClient())
+    assert results == []
+    assert results.error_code is None
+
+
+def test_invalid_provider_response_is_diagnostic_failure(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    results = search_web("query", "neutral", client=FakeTavilyClient({"unexpected": []}))
+    assert results == []
+    assert results.error_code == "E-1002"
 
 
 def test_live_search_saves_cache_without_secret(monkeypatch, tmp_path):

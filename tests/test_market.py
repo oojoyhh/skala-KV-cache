@@ -6,10 +6,12 @@ from agents.market import (
     MarketEvidenceItem,
     _inferred_trl_ceiling,
     _trl_estimate,
+    _validated_items,
     market_node,
 )
 from state import TECHS, make_initial_state
 from tests.fixtures import sample_state_after_research
+from tools.web_search import search_web
 
 
 def _record(query, stance, index=0):
@@ -117,6 +119,44 @@ def test_duplicate_source_id_is_not_two_independent_trl_sources():
     assert estimate["level"] == 1
 
 
+def test_same_source_uses_highest_trl_item_for_level_and_evidence():
+    low = MarketEvidenceItem(
+        source_id="web:same", claim="개념을 제안했다", stance="neutral", trl_level=2
+    )
+    high = MarketEvidenceItem(
+        source_id="web:same",
+        claim="정식 출시 후 고객 운영 환경에서 적용이 검증됐다",
+        stance="positive",
+        trl_level=8,
+    )
+    estimate = _trl_estimate("TurboQuant", [low, high], "")
+    assert estimate["level"] == 1
+    assert "TRL 8 신호" in estimate["rationale"]
+    assert estimate["evidence"] == [
+        {"claim": high.claim, "source_id": "web:same", "stance": "positive"}
+    ]
+
+
+def test_two_distinct_highest_trl_sources_still_confirm_level():
+    items = [
+        MarketEvidenceItem(
+            source_id="web:first", claim="개념을 제안했다", stance="neutral", trl_level=2
+        ),
+        MarketEvidenceItem(
+            source_id="web:first", claim="첫 번째 고객 운영 검증", stance="positive", trl_level=8
+        ),
+        MarketEvidenceItem(
+            source_id="web:second", claim="두 번째 고객 운영 검증", stance="positive", trl_level=8
+        ),
+    ]
+    estimate = _trl_estimate("TurboQuant", items, "")
+    assert estimate["level"] == 8
+    assert {evidence["claim"] for evidence in estimate["evidence"]} == {
+        "첫 번째 고객 운영 검증",
+        "두 번째 고객 운영 검증",
+    }
+
+
 def test_benchmark_alone_cannot_reach_trl6():
     assert _inferred_trl_ceiling({"title": "benchmark", "content": "benchmark results"}) < 6
 
@@ -172,6 +212,62 @@ def test_negative_evidence_is_not_fabricated():
         assert all(evidence["stance"] != "negative" for evidence in market_evidence)
 
 
+def test_validated_korean_limitation_keeps_llm_negative_stance():
+    claim = "기존 서빙 환경과 호환되지 않아 별도 커널 구현이 필요하다"
+    record = {
+        **_record("TurboQuant adoption", "negative"),
+        "title": "TurboQuant 배포 검토",
+        "content": claim,
+        "_perspective": "market",
+        "_query_stance": "negative",
+    }
+
+    class KoreanLimitationClient:
+        def invoke(self, prompt, response_model):
+            return response_model(
+                items=[
+                    {
+                        "source_id": record["source_id"],
+                        "claim": claim,
+                        "stance": "negative",
+                        "market_category": "adoption",
+                    }
+                ]
+            )
+
+    items, failed = _validated_items("TurboQuant", [record], KoreanLimitationClient())
+    assert not failed
+    assert items[0].stance == "negative"
+
+
+def test_validated_korean_support_keeps_llm_positive_stance():
+    claim = "운영 환경에 통합되어 처리량이 개선됐다"
+    record = {
+        **_record("TurboQuant adoption", "positive"),
+        "title": "TurboQuant 운영 결과",
+        "content": claim,
+        "_perspective": "market",
+        "_query_stance": "positive",
+    }
+
+    class KoreanSupportClient:
+        def invoke(self, prompt, response_model):
+            return response_model(
+                items=[
+                    {
+                        "source_id": record["source_id"],
+                        "claim": claim,
+                        "stance": "positive",
+                        "market_category": "adoption",
+                    }
+                ]
+            )
+
+    items, failed = _validated_items("TurboQuant", [record], KoreanSupportClient())
+    assert not failed
+    assert items[0].stance == "positive"
+
+
 def test_retry_hint_changes_queries():
     first_queries = []
     retry_queries = []
@@ -209,6 +305,57 @@ def test_all_search_failures_do_not_escape_and_keep_both_keys():
     assert set(result["trl_result"]) == set(TECHS)
     assert set(result["market_result"]) == set(TECHS)
     assert result["references"] == []
+    for tech in TECHS:
+        assert result["trl_result"][tech]["uncertainty"].startswith("[E-1002]")
+        assert result["market_result"][tech]["summary"].startswith("[E-1002]")
+
+
+def _provider_search(client):
+    def search(query, stance="neutral", max_results=None, used_by="market", **kwargs):
+        return search_web(
+            query,
+            stance,
+            max_results=max_results,
+            used_by=used_by,
+            client=client,
+        )
+
+    return search
+
+
+class _Provider:
+    def __init__(self, response=None, error=None):
+        self.response = response
+        self.error = error
+
+    def search(self, **kwargs):
+        if self.error:
+            raise self.error
+        return self.response
+
+
+def test_provider_zero_results_reaches_market_as_e1001(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "SEARCH_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "USE_SEARCH_CACHE", False)
+    result = _run(search_fn=_provider_search(_Provider({"results": []})))
+    for tech in TECHS:
+        assert result["trl_result"][tech]["uncertainty"].startswith("[E-1001]")
+        assert result["market_result"][tech]["summary"].startswith("[E-1001]")
+
+
+def test_provider_exception_reaches_market_as_e1002_without_escaping(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "SEARCH_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "USE_SEARCH_CACHE", False)
+    result = _run(search_fn=_provider_search(_Provider(error=RuntimeError("provider down"))))
+    for tech in TECHS:
+        assert result["trl_result"][tech]["uncertainty"].startswith("[E-1002]")
+        assert result["market_result"][tech]["summary"].startswith("[E-1002]")
+
+
+def test_invalid_provider_response_reaches_market_as_e1002(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "SEARCH_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "USE_SEARCH_CACHE", False)
+    result = _run(search_fn=_provider_search(_Provider({"unexpected": []})))
     for tech in TECHS:
         assert result["trl_result"][tech]["uncertainty"].startswith("[E-1002]")
         assert result["market_result"][tech]["summary"].startswith("[E-1002]")

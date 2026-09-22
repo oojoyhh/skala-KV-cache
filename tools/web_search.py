@@ -50,6 +50,14 @@ class MissingTavilyAPIKeyError(WebSearchError):
     """Raised when live search is requested without Tavily credentials."""
 
 
+class SearchResults(list[dict[str, Any]]):
+    """List-compatible search results with a non-sensitive failure diagnostic."""
+
+    def __init__(self, values: Iterable[dict[str, Any]] = (), *, error_code: str | None = None):
+        super().__init__(values)
+        self.error_code = error_code
+
+
 def normalize_url(url: str) -> str:
     """Return a stable URL representation suitable for hashing.
 
@@ -275,14 +283,14 @@ def _passes_min_date(result: Mapping[str, Any]) -> bool:
 
 def _raw_results(response: Any) -> list[Mapping[str, Any]] | None:
     if isinstance(response, Mapping):
-        results = response.get("results", [])
+        results = response.get("results")
     elif isinstance(response, list):
         results = response
     else:
         return None
-    if not isinstance(results, list):
+    if not isinstance(results, list) or any(not isinstance(result, Mapping) for result in results):
         return None
-    return [result for result in results if isinstance(result, Mapping)]
+    return results
 
 
 def search_web(
@@ -293,7 +301,7 @@ def search_web(
     *,
     client: Any = None,
     api_key: Optional[str] = None,
-) -> list[dict]:
+) -> SearchResults:
     """Search Tavily and return de-duplicated, Reference-compatible records.
 
     ``client`` is injectable so tests do not require network access or an API
@@ -322,11 +330,11 @@ def search_web(
             raw_results = _raw_results(response)
             if raw_results is None:
                 logging.warning("[E-1002] 웹 검색 응답 형식 오류")
-                return []
+                return SearchResults(error_code="E-1002")
             _save_cache(path, query, stance, max_results, raw_results)
         except Exception:  # noqa: BLE001 - public search boundary contains provider failures
             logging.warning("[E-1002] 웹 검색 호출 실패")
-            return []
+            return SearchResults(error_code="E-1002")
 
     unique: dict[str, dict[str, Any]] = {}
     for raw_result in raw_results:
@@ -354,4 +362,4 @@ def search_web(
             if not existing.get(field) and enriched.get(field):
                 existing[field] = enriched[field]
 
-    return list(unique.values())
+    return SearchResults(unique.values())
