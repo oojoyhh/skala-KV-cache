@@ -58,20 +58,20 @@ KV cache 병목을 반대 방향에서 푸는 SW 기술(TurboQuant)과 시스템
 ## Architecture
 
 ```mermaid
-graph TD
-    START([START]) --> select[기술 선정<br>config 값: TurboQuant / InfiniGen]
-    select --> research[🔍 기술 조사<br>RAG]
-    research --> market[📊 시장 평가 + TRL]
-    research --> stakeholder[🤝 이해관계자 평가]
-    research --> domain[🏭 도메인 평가]
-    market --> check{✅ 충분성 검사}
-    stakeholder --> check
-    domain --> check
-    check -. 부족 관점만 재조사 .-> market
-    check -. 부족 관점만 재조사 .-> stakeholder
-    check -. 부족 관점만 재조사 .-> domain
-    check -- 모두 충분 또는 재조사 상한 --> synthesis[⚖️ 평가 종합]
-    synthesis --> report[📝 보고서 생성]
+flowchart TD
+    START([START]) --> select["기술 선정<br>config: TurboQuant / InfiniGen"]
+    select --> research["🔍 기술 조사 · RAG<br>관련성 체크 → 쿼리 재작성 (노드 내부 루프)"]
+    research --> EVAL
+    subgraph EVAL["관점별 평가 · 3개 에이전트 병렬 실행 (Fan-out)"]
+        direction LR
+        market["📊 시장 + TRL"]
+        stakeholder["🤝 이해관계자"]
+        domain["🏭 도메인"]
+    end
+    EVAL --> check{"✅ 충분성 검사"}
+    check -. "부족한 관점만 재조사 (최대 2회)" .-> EVAL
+    check -- "모두 충분 또는 재조사 상한" --> synthesis["⚖️ 평가 종합"]
+    synthesis --> report["📝 보고서 생성"]
     report --> END([END])
 ```
 
