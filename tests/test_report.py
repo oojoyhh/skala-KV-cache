@@ -69,9 +69,9 @@ def test_citation_numbers_and_used_by_merge():
         {"source_id": "web:x", "kind": "web", "author": "B", "date": "2026-05-11", "title": "W", "venue": "Blog",
          "url": "https://b", "used_by": [], "stance": "negative"},
     ]
-    c = Citations(refs)
+    c = Citations(refs, {"arxiv:1#p1", "arxiv:1#p7"})
     assert c.cite("arxiv:1#p7") == "[1, p.7]" and c.cite("arxiv:1#p1") == "[1, p.1]"
-    assert c.cite("web:x") is None               # used_by가 비어 있으면 REFERENCE 제외
+    assert c.cite("web:x") is None               # Evidence가 가리키지 않는 출처는 REFERENCE 제외
     assert c.docs["arxiv:1"]["used_by"] == ["research", "domain"]
     assert c.reference_lines() == ["[1] A(2025). T. arXiv, 1."]
     assert report.format_reference(refs[2]) == "B(2026-05-11). W. Blog, https://b"
@@ -83,3 +83,58 @@ def test_llm_failure_does_not_stop(tmp_path, monkeypatch):
     assert (tmp_path / config.REPORT_FILENAME).exists() and out["report_path"]
     md = (tmp_path / config.REPORT_FILENAME).with_suffix(".md").read_text(encoding="utf-8")
     assert "[E-1002]" in md and "- [샘플]" in md  # 근거 목록으로 대체
+
+
+def test_summary_is_not_an_introduction():
+    prompts = []
+
+    def recording_generate(prompt: str) -> str:
+        prompts.append(prompt)
+        return fake_generate(prompt)
+
+    build_blocks(sample_state_after_eval(True), recording_generate)
+    summary_prompt = next(p for p in prompts if "## 챕터: SUMMARY" in p)
+    assert "인트로덕션이 아니다" in summary_prompt
+    assert "1. 분석 배경" not in summary_prompt and "2. 기술 선정" not in summary_prompt  # 배경·선정 챕터는 넘기지 않음
+    assert "3. 기술 개요" in summary_prompt and "6. 한계점" in summary_prompt
+
+
+def test_reference_keeps_uncited_sources_and_formats():
+    refs = [
+        {"source_id": "web:a", "kind": "web", "author": "", "date": "Thu, 26 Mar 2026 10:00:00 GMT", "title": "Cited",
+         "venue": "Site A", "url": "https://a", "used_by": ["market"], "stance": "positive"},
+        {"source_id": "web:b", "kind": "web", "author": "Org B", "date": "", "title": "Consulted",
+         "venue": "Site B", "url": "https://b", "used_by": ["stakeholder"], "stance": "negative"},
+        {"source_id": "patent:c", "kind": "patent", "author": "NVIDIA", "date": "2025-03-01", "title": "KV Cache Transform Coding",
+         "venue": "US-XXXXXXX-A1", "url": "https://c", "used_by": ["market"], "stance": "neutral"},
+    ]
+    c = Citations(refs, {"web:a", "web:b", "patent:c"})
+    c.cite("web:a")
+    assert c.reference_lines() == [
+        "[1] Site A(2026-03-26). Cited. Site A, https://a",            # 작성자 없음 → 사이트명, RFC 날짜 → YYYY-MM-DD
+        "[2] Org B(n.d.). Consulted. Site B, https://b",               # 본문 인용은 없어도 Evidence에 있으면 수록
+        "[3] NVIDIA(2025-03). KV Cache Transform Coding, US-XXXXXXX-A1, https://c",
+    ]
+
+
+def test_reference_excludes_search_results_not_used_as_evidence():
+    state = sample_state_after_eval(True)
+    unused = {"source_id": "web:unused", "kind": "web", "author": "X", "date": "2026-01-01", "title": "검색만 된 자료",
+              "venue": "X", "url": "https://x", "used_by": ["market"], "stance": "neutral"}
+    state["references"].append(unused)
+    text = _text(build_blocks(state, fake_generate))
+    assert "검색만 된 자료" not in text
+
+
+def test_limitations_always_list_sufficiency_reasons():
+    state = sample_state_after_eval(False)   # InfiniGen 이해관계자 한계·반론 근거 0건
+    blocks = build_blocks(state, lambda prompt: "LLM이 사유를 빠뜨린 본문")
+    limits = [v for k, v in blocks if k == "p"][-2]   # 6장 (마지막 p는 REFERENCE)
+    assert "충분성 검사 미달 사유" in limits and "- 이해관계자: InfiniGen" in limits
+
+
+def test_glyphs_missing_from_font_are_spelled_out():
+    from fontTools.ttLib import TTFont
+
+    cmap = TTFont(report._font_file()).getBestCmap()
+    assert report._printable("alpha=α, λ=0.7, ① ✅", cmap) == "alpha=alpha, lambda=0.7, (1) "

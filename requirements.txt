@@ -19,7 +19,7 @@ pymupdf
 tavily-python
 
 # 보고서 PDF (6번)
-fpdf2
+fpdf2>=2.7          # pdf.table 사용 (테스트 버전 2.8.8)
 
 # 테스트
 pytest
