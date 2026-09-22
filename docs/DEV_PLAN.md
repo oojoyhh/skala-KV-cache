@@ -98,7 +98,8 @@ make_source_id(url: str) -> str                  # "web:<sha1[:10]>"
 # rag/retriever.py (1번)
 retrieve(query: str, k: int = 5) -> list[Chunk]
 #   Chunk = {"text": str, "source_id": "arxiv:<id>#p<page>", "arxiv_id": str, "page": int, "section": str}
-paper_reference(arxiv_id: str) -> Reference      # 논문 1편의 Reference (source_id는 "arxiv:<id>", 문서 단위)
+paper_reference(arxiv_id: str, page: int) -> Reference
+#   페이지 단위 Reference: source_id = f"arxiv:{arxiv_id}#p{page}" (청크·Evidence와 동일)
 
 # llm.py (5번)
 get_llm(role: Literal["generator", "judge"] = "generator")   # ChatOpenAI 인스턴스
@@ -107,6 +108,12 @@ generate(prompt: str, role="generator") -> str
 StructuredClient(role="judge")                    # .invoke(prompt, response_model)
 #   4번의 StructuredOutputClient.invoke(prompt, response_model)와 같은 형태 → 그대로 주입 가능
 ```
+
+**논문 출처 연결 계약 (설계서 D-1·`state.py`와 동일)**
+- 1번 `paper_reference`는 청크의 `page`를 받아 페이지 단위 Reference를 반환한다. 페이지는 PDF의 1부터 시작하는 페이지 번호이며, 청크·Evidence·Reference에서 같은 값을 사용한다.
+- 2번 `research_node`는 실제 채택한 근거의 청크마다 `paper_reference(chunk["arxiv_id"], chunk["page"])`를 호출하고, 해당 Evidence와 **정확히 같은 `source_id`**를 가진 Reference를 `references`에 반환한다. 같은 페이지의 Reference는 노드 반환 전에 중복 제거할 수 있다.
+- State에 넣는 논문 Reference의 ID에서 `#p<page>`를 제거하지 않는다. 문서 단위 병합은 보고서 생성 시에만 수행하며, Evidence의 페이지 ID는 본문 페이지 인용에 유지한다.
+- 1·2번 테스트는 반환 State의 모든 논문 `Evidence.source_id`에 정확히 대응하는 `Reference.source_id`가 있는지 확인한다. 같은 논문의 서로 다른 두 페이지도 포함해 검증한다. 보고서에서는 두 페이지가 REFERENCE 한 항목으로 병합되면서 본문 페이지 인용은 구별되어야 한다.
 
 ### 3-3. 충분성 검사·루프 (check ↔ graph)
 
