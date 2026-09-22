@@ -254,5 +254,27 @@ def test_domain_chapter_gets_same_counts_as_table_and_limits_skip_counts():
     build_blocks(sample_state_after_eval(False), lambda p: prompts.append(p) or "본문")
     domain_prompt = next(p for p in prompts if "## 챕터: 4-4" in p)
     assert '"지표별 근거 수"' in domain_prompt and '"전송 오버헤드": 1' in domain_prompt
-    limits_prompt = next(p for p in prompts if "## 챕터: 6." in p)
-    assert "sufficiency_reasons" not in limits_prompt   # 부족 현황은 코드가 붙이는 목록으로만
+    assert not any("## 챕터: 6." in p for p in prompts)   # 6장은 코드가 고정 작성 (기술별 현황 오기 방지)
+
+
+def test_final_wording_guards():
+    assert report._drop_recommendations("InfiniGen은 하드웨어 기반의 관리 기법이다.\n결론적으로 둘 다 좋다.") == \
+        "InfiniGen은 메모리 계층 활용의 관리 기법이다."
+    assert report._drop_recommendations("TurboQuant는 다른 기술들보다 우수하다 [3]. 압축률은 4.5배다 [1].") == "압축률은 4.5배다 [1]."
+    th = "อัลกอริทึมการบีบอัด TurboQuant ของ Google คืออะไร"
+    url = "https://tradingkey.com/th/analysis/261728273-what-is-google-turboquant-compression"
+    assert report._readable_title(th, url) == "what is google turboquant compression (원문 비영어 제목)"
+    assert report._readable_title("Google TurboQuant 한국어 제목", url) == "Google TurboQuant 한국어 제목"
+
+
+def test_missing_web_dates_are_filled_from_page_not_invented():
+    refs = [
+        {"kind": "web", "url": "https://a.com/x", "date": ""},
+        {"kind": "web", "url": "https://b.com/2026/03/29/y", "date": ""},
+        {"kind": "web", "url": "https://c.com/z", "date": "2026-01-01"},
+        {"kind": "paper", "url": "https://arxiv.org/abs/1", "date": "2025"},
+    ]
+    pages = {"https://a.com/x": "2026-05-11", "https://b.com/2026/03/29/y": ""}
+    out = report.fill_missing_dates(refs, fetch=lambda u: pages.get(u) or report.URL_DATE.search(u) and "-".join(report.URL_DATE.search(u).groups()) or "")
+    assert [r["date"] for r in out] == ["2026-05-11", "2026-03-29", "2026-01-01", "2025"]
+    assert report.fill_missing_dates([{"kind": "web", "url": "https://d.com", "date": ""}], fetch=lambda u: "")[0]["date"] == ""
