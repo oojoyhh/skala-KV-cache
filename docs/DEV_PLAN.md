@@ -121,6 +121,7 @@ StructuredClient(role="judge")                    # .invoke(prompt, response_mod
 - graph 라우팅: 모두 충분 → `synthesis` / 불충분 & `retry_count ≤ MAX_RETRY` → 부족 관점 노드만 재실행 / `retry_count > MAX_RETRY` → `synthesis` (E-1005). 결과적으로 재조사는 최대 `MAX_RETRY`(=2)회 (설계서 D-2 "retry_count > N"과 동일).
 - `synthesis_node`는 `sufficiency.reasons`에 남은 부족 관점을 `synthesis.limitations`에 옮겨 적는다 (설계서 A: 평가 종합 입력에 sufficiency 포함).
 - 판정 기준 (설계서 D-2 기준, 수치는 `config.py`):
+  - 근거 개수는 `state.perspective_evidence()`가 돌려주는 값으로 센다. 같은 `(source_id, claim)`이 한 관점의 여러 필드에 들어가면(예: 같은 근거를 이해관계자 두 그룹에 배치) **한 번만 센다** — 중복 계수는 근거 부풀리기이므로. 충분성 검사·평가 종합·보고서가 같은 함수를 쓰므로 세 곳의 근거 개수가 항상 같다.
   - 관점별로 **두 기술 각각** 충족해야 True
   - Evidence ≥ `MIN_EVIDENCE`(4), 지지(positive) ≥ 1 · 한계·반론(negative) ≥ 1 — stance 정의는 설계서 v5 D-1 / `state.py` 주석
   - 한 source_id가 관점 근거의 `SAME_SOURCE_CAP`(50%) 초과 시 불충분
@@ -170,7 +171,7 @@ python -c "from tests.fixtures import sample_state_after_research, fake_search; 
 - `.env`: `OPENAI_API_KEY`, `TAVILY_API_KEY` (필수, `app.py`가 시작 시 확인), `GENERATOR_MODEL`·`JUDGE_MODEL`·`USE_SEARCH_CACHE`(선택). 실제 키는 커밋 금지.
 - LLM은 `llm.py`로만 호출: `generate(prompt)`, `structured(prompt, PydanticModel)`, `StructuredClient()`(4번 분류 함수에 그대로 주입), `load_prompt(name)`. 실패 시 `LLMError("[E-1002] ...")` → 노드가 잡아서 빈 결과 처리.
 - Python **3.10 이상** (`state.py`의 `dict[...]`·`tuple[...]` 표기).
-- `requirements.txt`: 1차 통합 때 `pip freeze`로 버전 고정. 필요 패키지 — langgraph, langchain-openai, langchain-huggingface, langchain-community, pydantic, python-dotenv, tavily-python, pymupdf, faiss-cpu, sentence-transformers, PDF 라이브러리(6번)
+- `requirements.txt`: DAY 3 통합 환경(Python 3.11.15 / macOS)의 `pip freeze`로 직접 의존성을 `==` 고정 완료. 필요 패키지 — langgraph, langchain-core, langchain-openai, langchain-huggingface, langchain-community, langchain-text-splitters, pydantic, python-dotenv, tavily-python, pymupdf, faiss-cpu, sentence-transformers, PDF 라이브러리(6번)
 
 ---
 

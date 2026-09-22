@@ -14,12 +14,11 @@ from state import Evidence, Reference, StakeholderResult, State, Stance, TechNam
 
 
 class EvidenceSelection(BaseModel):
-    """Internal Pydantic schema used to constrain an LLM response."""
+    """An LLM selection key and content-derived stance, not copied Evidence."""
 
     model_config = ConfigDict(extra="forbid")
 
-    claim: str = Field(min_length=1)
-    source_id: str = Field(min_length=1)
+    id: str = Field(min_length=1)
     stance: Stance
 
 
@@ -60,14 +59,16 @@ def build_stakeholder_prompt(
     from llm import load_prompt
 
     evidence_text = "\n".join(
-        f"- claim: {item['claim']} | source_id: {item['source_id']} | stance: {item['stance']}"
-        for item in evidence
+        f"- id: E{index} | claim: {item['claim']}"
+        + (f" | stance: {item['stance']}" if not classify_stance else "")
+        for index, item in enumerate(evidence, 1)
     ) or "(No Evidence was provided.)"
     stance_instruction = (
-        "- 각 claim 본문만 근거로 positive, negative, neutral 중 stance를 분류한다. "
-        "검색 의도는 stance 근거가 아니며, 입력의 stance 값은 미분류 placeholder다.\n"
+        "- 각 claim 본문만 근거로 stance를 분류한다. 검색 의도는 stance 근거가 아니며, "
+        "입력 stance는 미분류 placeholder다. positive는 지지 근거, negative는 한계·반론·제약 근거, "
+        "neutral은 중립·배경 근거다.\n"
         if classify_stance
-        else "- Evidence의 claim, source_id, stance를 변경하지 않는다.\n"
+        else "- 선택한 id의 stance는 Evidence 목록의 stance를 그대로 사용한다.\n"
     )
     return load_prompt("stakeholder").format(
         technology=technology,
@@ -95,18 +96,13 @@ def validate_stakeholder_result(
     *,
     classify_stance: bool = False,
 ) -> StakeholderResult:
-    """Ensure every returned Evidence item exactly matches an input item.
+    """Restore selected Evidence from candidate IDs and discard invalid selections.
 
-    This rejects model-created claims and unknown source IDs rather than silently
-    removing them, so callers can trace a structured-output contract violation.
+    A malformed ID or a conflicting repeated stance affects only that selection;
+    it must not turn the complete technology result into E-1002.
     """
 
-    input_items = {
-        (item["claim"], item["source_id"], item["stance"])
-        for item in evidence
-    }
-    input_claim_sources = {(item["claim"], item["source_id"]) for item in evidence}
-    input_source_ids = {item["source_id"] for item in evidence}
+    by_id = {f"E{index}": item for index, item in enumerate(evidence, 1)}
 
     validated_groups: dict[str, list[Evidence]] = {}
     classified_stances: dict[tuple[str, str], Stance] = {}
@@ -114,28 +110,20 @@ def validate_stakeholder_result(
         selected_items = getattr(result, group_name)
         group: list[Evidence] = []
         for selected in selected_items:
-            selected_tuple = (selected.claim, selected.source_id, selected.stance)
-            claim_source = (selected.claim, selected.source_id)
-            if selected.source_id not in input_source_ids:
-                raise StakeholderValidationError(
-                    f"{group_name} references an unknown source_id: {selected.source_id}"
-                )
-            if (claim_source not in input_claim_sources if classify_stance else selected_tuple not in input_items):
-                raise StakeholderValidationError(
-                    f"{group_name} contains Evidence not present in the input: "
-                    f"{selected.source_id}"
-                )
+            candidate = by_id.get(selected.id)
+            if candidate is None:
+                continue
+            claim_source = (candidate["claim"], candidate["source_id"])
+            stance: Stance = selected.stance if classify_stance else candidate["stance"]
             previous_stance = classified_stances.get(claim_source)
-            if previous_stance is not None and previous_stance != selected.stance:
-                raise StakeholderValidationError(
-                    f"{group_name} assigns conflicting stances to {selected.source_id}"
-                )
-            classified_stances[claim_source] = selected.stance
+            if previous_stance is not None and previous_stance != stance:
+                continue
+            classified_stances.setdefault(claim_source, stance)
             group.append(
                 {
-                    "claim": selected.claim,
-                    "source_id": selected.source_id,
-                    "stance": selected.stance,
+                    "claim": candidate["claim"],
+                    "source_id": candidate["source_id"],
+                    "stance": stance,
                 }
             )
         validated_groups[group_name] = group
