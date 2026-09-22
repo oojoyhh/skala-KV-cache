@@ -294,7 +294,7 @@ def test_retrieve_converts_documents_to_chunk_contract(monkeypatch) -> None:
     index.build_or_load.return_value = ([], vectorstore)
     monkeypatch.setattr("rag.retriever._INDEX", index)
 
-    assert retrieve("KV cache", k=1) == [
+    assert retrieve("KV cache", k=10) == [
         {
             "text": "KV cache offloading",
             "source_id": "arxiv:2406.19707#p3",
@@ -306,8 +306,8 @@ def test_retrieve_converts_documents_to_chunk_contract(monkeypatch) -> None:
     vectorstore.as_retriever.assert_called_once_with(
         search_type="mmr",
         search_kwargs={
-            "k": 1,
-            "fetch_k": config.MMR_FETCH_K,
+            "k": 10,
+            "fetch_k": 20,
             "lambda_mult": config.MMR_LAMBDA,
         },
     )
