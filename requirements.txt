@@ -1,25 +1,26 @@
 # Python 3.10 이상 · 가상환경(.venv)에서 설치: pip install -r requirements.txt
-# 버전은 12:00 1차 통합 때 통합 환경에서 pip freeze로 고정한다 (docs/DEV_PLAN.md §4)
+# 버전은 DAY 3 통합 환경(Python 3.11.15 / macOS)의 pip freeze로 고정했다 (docs/DEV_PLAN.md §4)
 
 # 그래프 · LLM
-langgraph
-langchain-core
-langchain-openai
-python-dotenv
-pydantic
+langgraph==1.2.12
+langchain-core==1.6.4
+langchain-openai==1.6.3
+python-dotenv==1.2.3
+pydantic==2.13.5
 
 # RAG (1·2번) — 임베딩 BAAI/bge-m3
-langchain-community
-langchain-huggingface
-sentence-transformers
-faiss-cpu
-pymupdf
+langchain-community==0.4.2
+langchain-huggingface==1.2.2
+langchain-text-splitters==1.1.2    # rag/loader.py 직접 import
+sentence-transformers==6.1.0
+faiss-cpu==1.15.1
+pymupdf==1.28.2
 
 # 웹 검색 (3·4번)
-tavily-python
+tavily-python==0.8.4
 
 # 보고서 PDF (6번)
-fpdf2>=2.7          # pdf.table 사용 (테스트 버전 2.8.8)
+fpdf2==2.8.8        # pdf.table 사용
 
 # 테스트
-pytest
+pytest==9.1.1
