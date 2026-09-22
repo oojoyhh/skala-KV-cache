@@ -1,71 +1,95 @@
-"""Market and public-evidence TRL assessment node for TurboQuant/InfiniGen.
+"""시장성 및 공개 근거 기반 TRL 평가 노드.
 
-This module has no LLM dependency because the repository does not yet provide an
-LLM wrapper.  It uses conservative, deterministic evidence classification and
-plain dictionaries compatible with the agreed State interface.
+웹 검색 결과를 공용 ``StructuredClient``로 구조화한 뒤, source_id와 원문
+포함 여부를 코드에서 다시 검증한다. TRL 최종 단계는 LLM 응답이 아니라
+서로 다른 공개 출처 수와 설계서 v5 C-2의 보수적 단계 조건으로 결정한다.
 """
 
 from __future__ import annotations
 
+import json
 import re
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Iterable, Literal, Mapping, Sequence
 
-from tools.web_search import (
-    MissingTavilyAPIKeyError,
-    make_source_id,
-    search_web,
-    to_reference,
+from pydantic import BaseModel, Field
+
+import config
+from llm import StructuredClient, load_prompt
+from state import (
+    TECHS,
+    Evidence,
+    MarketResult,
+    Reference,
+    State,
+    Stance,
+    TRLEstimate,
+    TechName,
+    retry_hint,
 )
+from tools.web_search import make_source_id, search_web, to_reference
 
 
-SearchFunction = Callable[..., List[Dict[str, Any]]]
-
-_TECH_ROLES = (("tech_sw", "TurboQuant"), ("tech_hw", "InfiniGen"))
-_QUERY_SPECS = (
-    ("trl", "neutral", "{tech} KV cache official paper implementation experiments"),
-    ("adoption", "positive", "{tech} adoption deployment framework support LLM serving"),
-    ("ecosystem", "positive", "{tech} vLLM SGLang Hugging Face integration"),
-    ("adoption", "negative", "{tech} limitations barriers quality degradation deployment"),
-    (
-        "market_size_growth",
-        "neutral",
-        "{tech} LLM inference optimization KV cache AI infrastructure market growth",
-    ),
-)
+SearchFunction = Callable[..., list[dict]]
+MarketCategory = Literal["market_size_growth", "adoption", "ecosystem", "none"]
 
 _NEGATIVE_TERMS = re.compile(
     r"\b(limit(?:ation|ed|s)?|barrier|concern|degrad(?:e|ation)|overhead|"
     r"bottleneck|challenge|drawback|trade-?off|accuracy loss|not support(?:ed)?|"
-    r"not available|no production)\b",
+    r"not available|no production|operational burden)\b",
     re.IGNORECASE,
 )
 _POSITIVE_TERMS = re.compile(
     r"\b(adopt(?:ed|ion)?|support(?:ed|s)?|integrat(?:e|ed|ion)|improv(?:e|ed|ement)|"
-    r"speedup|reduce[ds]?|benefit|deploy(?:ed|ment)?|available|release[ds]?)\b",
+    r"speedup|reduce[ds]?|benefit|deploy(?:ed|ment)?|available|release[ds]?|growth)\b",
     re.IGNORECASE,
 )
 
+_TRL_QUERY_TEMPLATES = (
+    "{tech} official paper code reproducibility prototype LLM serving demonstration",
+    "{tech} end-to-end serving benchmark pilot preview product customer deployment",
+)
+_MARKET_QUERY_TEMPLATES: dict[Stance, tuple[str, ...]] = {
+    "positive": (
+        "{tech} adoption deployment framework support ecosystem LLM serving",
+        "{tech} related inference optimization market growth commercial adoption",
+        "{tech} production usage integration standardization partner ecosystem",
+    ),
+    "negative": (
+        "{tech} limitation deployment barrier operational overhead production concern",
+        "{tech} quality degradation accuracy trade-off framework support challenge",
+        "{tech} adoption obstacle integration cost ecosystem limitation",
+    ),
+    "neutral": (),
+}
 
-class MarketSearchError(RuntimeError):
-    """Raised when no market search can be completed."""
+
+class MarketEvidenceItem(BaseModel):
+    """LLM이 입력 검색 결과에서 선택하는 구조. Reference 생성은 허용하지 않는다."""
+
+    source_id: str
+    claim: str
+    stance: Stance
+    market_category: MarketCategory = "none"
+    trl_level: int | None = Field(default=None, ge=1, le=9)
 
 
-def _resolve_technologies(state: Mapping[str, Any]) -> List[str]:
-    technologies = []
-    for state_key, expected_name in _TECH_ROLES:
-        value = state.get(state_key) or expected_name
-        if value != expected_name:
-            raise ValueError(
-                f"{state_key} must be {expected_name!r} under the current State contract; "
-                f"got {value!r}"
-            )
-        technologies.append(value)
-    return technologies
+class MarketClassification(BaseModel):
+    items: list[MarketEvidenceItem] = Field(default_factory=list)
 
 
-def _record_reference(record: Mapping[str, Any]) -> Dict[str, Any]:
-    if "reference" in record and isinstance(record["reference"], Mapping):
-        return dict(record["reference"])
+def _resolve_technologies(state: State) -> tuple[TechName, ...]:
+    resolved: list[TechName] = []
+    for state_key, expected in (("tech_sw", TECHS[0]), ("tech_hw", TECHS[1])):
+        value = state.get(state_key, expected)
+        if value != expected:
+            raise ValueError(f"{state_key} must be {expected!r}; got {value!r}")
+        resolved.append(expected)
+    return tuple(resolved)
+
+
+def _record_reference(record: Mapping[str, Any]) -> Reference:
+    if isinstance(record.get("reference"), Mapping):
+        return to_reference(record["reference"])
     try:
         return to_reference(record)
     except ValueError:
@@ -77,11 +101,11 @@ def _record_reference(record: Mapping[str, Any]) -> Dict[str, Any]:
             "kind": "web",
             "author": str(record.get("author") or ""),
             "date": str(record.get("date") or ""),
-            "title": str(record.get("title") or "Untitled web source"),
+            "title": str(record.get("title") or ""),
             "venue": str(record.get("venue") or ""),
             "url": url,
             "used_by": used_by,
-            "stance": str(record.get("stance") or "neutral"),
+            "stance": record.get("stance", "neutral"),
         }
 
 
@@ -89,74 +113,59 @@ def _content(record: Mapping[str, Any]) -> str:
     return " ".join(str(record.get("content") or record.get("summary") or "").split())
 
 
-def _display_excerpt(record: Mapping[str, Any], limit: int = 280) -> str:
-    text = _content(record) or str(record.get("title") or "내용 미제공")
-    if len(text) <= limit:
-        return text
-    return text[: limit - 1].rstrip() + "…"
-
-
-def _actual_evidence_stance(record: Mapping[str, Any]) -> str:
-    text = f"{record.get('title', '')} {_content(record)}"
-    requested = str(record.get("_query_stance") or record.get("stance") or "neutral")
-    if requested == "negative" and _NEGATIVE_TERMS.search(text):
-        return "negative"
-    if requested == "positive" and _POSITIVE_TERMS.search(text):
-        return "positive"
-    return "neutral"
-
-
-def _evidence(record: Mapping[str, Any], category: str) -> Dict[str, str]:
-    reference = _record_reference(record)
-    title = reference["title"]
-    excerpt = _display_excerpt(record)
-    if category == "market_size_growth":
-        claim = (
-            f"'{title}'은(는) 관련 LLM 추론·인프라 배경 자료로 분류된다. "
-            f"이는 해당 기술 자체의 직접 시장 규모로 해석하지 않는다. 출처 내용: {excerpt}"
-        )
-    else:
-        claim = f"'{title}' 자료가 보고한 내용: {excerpt}"
-    return {
-        "claim": claim,
-        "source_id": reference["source_id"],
-        "stance": _actual_evidence_stance(record),
-    }
-
-
 def _contains(text: str, pattern: str) -> bool:
     return re.search(pattern, text, flags=re.IGNORECASE) is not None
 
 
 def _inferred_trl_ceiling(record: Mapping[str, Any]) -> int:
-    """Infer only the highest maturity indicator explicitly visible in a source."""
+    """한 출처가 명시적으로 뒷받침하는 최고 TRL 신호를 보수적으로 계산한다."""
 
     text = f"{record.get('title', '')} {_content(record)}"
-    high_stage_negated = _contains(
+    negated_high_stage = _contains(
         text,
         r"\b(no|not|without|lack(?:s|ing|ed)?)\b.{0,35}\b(production|commercial|customer|deployed)\b",
     )
-    if not high_stage_negated and _contains(
+    sustained_production = _contains(
         text,
-        r"\b(in production|production deployment|commercially deployed|customer deployment|"
-        r"officially adopted)\b",
-    ):
+        r"\b(sustained production|in production|production deployment|commercially deployed|"
+        r"cloud adoption|product integration|shipped to customers?)\b",
+    )
+    if sustained_production and not negated_high_stage:
         return 9
-    if not high_stage_negated and _contains(
+
+    formal_release = _contains(
         text,
-        r"\b(generally available|general availability|official product release|commercial release)\b",
-    ):
+        r"\b(generally available|general availability|official product release|"
+        r"commercial release|formally released)\b",
+    )
+    operational_validation = _contains(
+        text,
+        r"\b(customer validation|customer deployment|customer use|operational validation|"
+        r"operational use|production validation|deployed for customers?)\b",
+    )
+    if formal_release and operational_validation and not negated_high_stage:
         return 8
-    if not high_stage_negated and _contains(text, r"\b(pilot|public preview|private preview|beta)\b"):
+
+    pilot_stage = _contains(text, r"\b(pilot|public preview|private preview|beta)\b")
+    operating_environment = _contains(
+        text, r"\b(operational environment|customer|cloud|data ?center|production environment)\b"
+    )
+    if pilot_stage and operating_environment and not negated_high_stage:
         return 7
 
-    serving_context = _contains(text, r"\b(llm serving|inference serving|serving system|cluster|end-to-end)\b")
-    demonstrated = _contains(text, r"\b(demonstrat(?:e|ed|ion)|benchmark(?:ed|s)?|evaluat(?:e|ed|ion))\b")
-    if serving_context and demonstrated:
+    serving_context = _contains(
+        text, r"\b(llm serving|inference serving|serving system|serving framework|serving cluster)\b"
+    )
+    integrated_system = _contains(
+        text, r"\b(integrated (?:system|prototype|implementation)|system prototype|prototype system)\b"
+    )
+    end_to_end_demo = _contains(
+        text, r"\b(end-to-end (?:serving )?(?:benchmark|evaluation|demonstration)|system demonstration)\b"
+    )
+    if serving_context and integrated_system and end_to_end_demo:
         return 6
 
-    prototype_or_integration = _contains(text, r"\b(prototype|integrat(?:e|ed|ion)|testbed)\b")
-    if prototype_or_integration and demonstrated:
+    if _contains(text, r"\b(prototype|testbed|benchmark(?:ed|s)?|evaluation)\b"):
         return 5
     if _contains(
         text,
@@ -164,210 +173,357 @@ def _inferred_trl_ceiling(record: Mapping[str, Any]) -> int:
         r"implementation (?:is )?available)\b",
     ):
         return 4
-    if _contains(
+    paper_or_study = _contains(text, r"\b(paper|publication|published study|research study)\b")
+    experimental_result = _contains(
         text,
-        r"\b(experiment(?:al|s)?|evaluat(?:e|ed|ion)|benchmark(?:ed|s)?|results?|"
-        r"speedup|latency|throughput)\b",
-    ):
+        r"\b(experiment(?:al|s)?|evaluat(?:e|ed|ion)|results?|speedup|latency|throughput)\b",
+    )
+    if paper_or_study and experimental_result:
         return 3
     if _contains(text, r"\b(propose[ds]?|design|architecture|concept|approach)\b"):
         return 2
     return 1
 
 
-def _dedupe_records(records: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:
-    unique: Dict[str, Dict[str, Any]] = {}
+def _dedupe_records(records: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    unique: dict[str, dict[str, Any]] = {}
     for record in records:
-        reference = _record_reference(record)
-        source_id = reference["source_id"]
+        try:
+            source_id = _record_reference(record)["source_id"]
+        except (TypeError, ValueError):
+            continue
         if source_id not in unique:
             unique[source_id] = dict(record)
     return list(unique.values())
 
 
-def _trl_estimate(technology: str, records: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
-    candidates = _dedupe_records(
-        record for record in records if record.get("_dimension") != "market_size_growth"
+def _query_specs(technology: TechName, trl_reason: str, market_reason: str) -> list[tuple[str, Stance, str]]:
+    specs: list[tuple[str, Stance, str]] = []
+    for index in range(config.QUERIES_PER_STANCE):
+        template = _TRL_QUERY_TEMPLATES[index % len(_TRL_QUERY_TEMPLATES)]
+        query = template.format(tech=technology)
+        if trl_reason:
+            query += f" retry focus: {trl_reason} independent evidence"
+        specs.append(("trl", "neutral", query))
+
+    for stance in ("positive", "negative"):
+        templates = _MARKET_QUERY_TEMPLATES[stance]
+        for index in range(config.QUERIES_PER_STANCE):
+            query = templates[index % len(templates)].format(tech=technology)
+            if market_reason:
+                focus = (
+                    "different sources deployment framework production usage"
+                    if stance == "positive"
+                    else "different sources limitation barrier operational overhead"
+                )
+                query += f" retry focus: {market_reason} {focus}"
+            specs.append(("market", stance, query))
+    return specs
+
+
+def _search_for_technology(
+    technology: TechName,
+    search_fn: SearchFunction,
+    trl_reason: str,
+    market_reason: str,
+) -> tuple[list[dict[str, Any]], int, int]:
+    records: list[dict[str, Any]] = []
+    empty_count = 0
+    error_count = 0
+    for perspective, stance, query in _query_specs(technology, trl_reason, market_reason):
+        try:
+            found = search_fn(
+                query,
+                stance=stance,
+                max_results=config.WEB_SEARCH_MAX_RESULTS,
+                used_by="market",
+            )
+        except Exception:  # noqa: BLE001 - injected providers must not stop the graph
+            error_count += 1
+            continue
+        if not found:
+            empty_count += 1
+            continue
+        for result in found:
+            if not isinstance(result, Mapping):
+                continue
+            record = dict(result)
+            record["_perspective"] = perspective
+            record["_query_stance"] = stance
+            records.append(record)
+    return _dedupe_records(records), empty_count, error_count
+
+
+def _classification_prompt(technology: TechName, records: Sequence[Mapping[str, Any]]) -> str:
+    evidence_input = [
+        {
+            "source_id": _record_reference(record)["source_id"],
+            "title": _record_reference(record)["title"],
+            "content": _content(record),
+            "search_intent": record.get("_query_stance", "neutral"),
+            "search_perspective": record.get("_perspective", "market"),
+        }
+        for record in records
+    ]
+    return (
+        load_prompt("market")
+        + "\n\n대상 기술: "
+        + technology
+        + "\n입력 검색 결과 JSON:\n"
+        + json.dumps(evidence_input, ensure_ascii=False)
     )
-    levels = [(record, _inferred_trl_ceiling(record)) for record in candidates]
+
+
+def _coerce_classification(value: Any) -> MarketClassification:
+    if isinstance(value, MarketClassification):
+        return value
+    if hasattr(MarketClassification, "model_validate"):
+        return MarketClassification.model_validate(value)
+    return MarketClassification.parse_obj(value)
+
+
+def _normalize_text(value: str) -> str:
+    return " ".join(value.casefold().split())
+
+
+def _validated_items(
+    technology: TechName,
+    records: Sequence[Mapping[str, Any]],
+    client: Any,
+) -> tuple[list[MarketEvidenceItem], bool]:
+    if not records:
+        return [], False
+    try:
+        response = client.invoke(_classification_prompt(technology, records), MarketClassification)
+        classified = _coerce_classification(response)
+    except Exception:  # noqa: BLE001 - LLM failures become E-1002 in node output
+        return [], True
+
+    by_source = {_record_reference(record)["source_id"]: record for record in records}
+    valid: list[MarketEvidenceItem] = []
+    seen: set[tuple[str, MarketCategory]] = set()
+    for item in classified.items:
+        record = by_source.get(item.source_id)
+        if record is None:
+            continue
+        source_text = _normalize_text(f"{record.get('title', '')} {_content(record)}")
+        claim = _normalize_text(item.claim)
+        if not claim or claim not in source_text:
+            continue
+
+        text = f"{record.get('title', '')} {_content(record)}"
+        stance: Stance = item.stance
+        if stance == "negative" and not _NEGATIVE_TERMS.search(text):
+            stance = "neutral"
+        elif stance == "positive" and not _POSITIVE_TERMS.search(text):
+            stance = "neutral"
+
+        key = (item.source_id, item.market_category)
+        if key in seen:
+            continue
+        seen.add(key)
+        valid.append(
+            MarketEvidenceItem(
+                source_id=item.source_id,
+                claim=item.claim.strip(),
+                stance=stance,
+                market_category=item.market_category,
+                trl_level=(
+                    min(item.trl_level, _inferred_trl_ceiling(record))
+                    if item.trl_level is not None
+                    else None
+                ),
+            )
+        )
+    return valid, False
+
+
+def _evidence(item: MarketEvidenceItem, contextual_market: bool = False) -> Evidence:
+    claim = item.claim
+    if contextual_market:
+        claim = f"관련 시장의 맥락적 지표: {claim}"
+    return {"claim": claim, "source_id": item.source_id, "stance": item.stance}
+
+
+def _trl_estimate(
+    technology: TechName,
+    items: Sequence[MarketEvidenceItem],
+    error_prefix: str,
+) -> TRLEstimate:
+    level_by_source: dict[str, int] = {}
+    item_by_source: dict[str, MarketEvidenceItem] = {}
+    for item in items:
+        if item.trl_level is None:
+            continue
+        level_by_source[item.source_id] = max(level_by_source.get(item.source_id, 1), item.trl_level)
+        item_by_source.setdefault(item.source_id, item)
 
     confirmed_level = 1
-    for level in range(9, 0, -1):
-        supporting_ids = {
-            _record_reference(record)["source_id"]
-            for record, ceiling in levels
-            if ceiling >= level
-        }
-        if len(supporting_ids) >= 2:
-            confirmed_level = level
+    for candidate in range(9, 0, -1):
+        if sum(level >= candidate for level in level_by_source.values()) >= 2:
+            confirmed_level = candidate
             break
 
-    sorted_levels = sorted(levels, key=lambda item: item[1], reverse=True)
-    trl_evidence = []
-    for record, _ in sorted_levels[:6]:
-        trl_evidence.append(_evidence(record, "trl"))
-
-    highest_observed = max((level for _, level in levels), default=1)
-    confirmed_count = sum(1 for _, level in levels if level >= confirmed_level)
-    rationale = (
-        f"{technology}의 공개 자료에서 TRL {confirmed_level} 조건과 양립하는 "
-        f"서로 다른 source_id {confirmed_count}개를 확인해 해당 단계로 보수적으로 추정했다."
-    )
-    if len(levels) < 2:
+    highest = max(level_by_source.values(), default=1)
+    count = sum(level >= confirmed_level for level in level_by_source.values())
+    if len(level_by_source) < 2:
         rationale = (
-            f"{technology}의 TRL을 뒷받침할 서로 다른 공개 source_id가 2개 미만이어서 "
-            "기초 공개 정보 단계인 TRL 1로 보수적으로 추정했다."
+            f"{technology}의 서로 다른 공개 source_id가 2개 미만이어서 TRL 1로 보수적으로 추정했다."
         )
-    elif highest_observed > confirmed_level:
-        higher_count = sum(1 for _, level in levels if level >= highest_observed)
+    else:
+        rationale = (
+            f"{technology}의 TRL {confirmed_level} 조건이 서로 다른 source_id {count}개에서 "
+            "확인되어 해당 단계를 공개 근거상 최고 확정 단계로 추정했다."
+        )
+    if highest > confirmed_level:
+        higher_count = sum(level >= highest for level in level_by_source.values())
         rationale += (
-            f" TRL {highest_observed} 수준의 신호는 {higher_count}개 source_id에서만 보여 "
-            "확정하지 않고 가능성으로만 남겼다."
+            f" TRL {highest} 신호는 {higher_count}개 source_id에서만 확인되어 "
+            "승급하지 않고 가능성으로만 기록했다."
         )
-    if confirmed_level < 9:
-        rationale += " 지속적인 상용 production 운용은 확인되지 않았다."
 
+    uncertainty = (
+        "본 TRL은 공개 정보 기반 추정이며, KV cache 기술은 논문 발표 시점과 실제 채택 간 "
+        "시차가 있어 실제 단계와 다를 수 있음."
+    )
+    if error_prefix:
+        uncertainty = f"{error_prefix} {uncertainty}"
+    evidence = [_evidence(item_by_source[source_id]) for source_id in level_by_source]
     return {
         "level": confirmed_level,
         "rationale": rationale,
-        "evidence": trl_evidence,
-        "uncertainty": (
-            "본 TRL은 공개 정보 기반 추정이며, 자료 간 독립성 및 실제 적용 수준의 확인이 "
-            "제한적이다. 논문 저자와 동일 연구팀의 구현은 독립적인 시장 채택 근거로 "
-            "간주하지 않았다."
-        ),
+        "evidence": evidence,
+        "uncertainty": uncertainty,
     }
 
 
-def _category_evidence(
-    records: Sequence[Mapping[str, Any]], category: str, limit: int = 6
-) -> List[Dict[str, str]]:
-    selected = _dedupe_records(record for record in records if record.get("_dimension") == category)
-    return [_evidence(record, category) for record in selected[:limit]]
-
-
 def _market_result(
-    technology: str,
-    records: Sequence[Mapping[str, Any]],
-    search_error_count: int,
-) -> Dict[str, Any]:
-    market_size_growth = _category_evidence(records, "market_size_growth")
-    adoption = _category_evidence(records, "adoption")
-    ecosystem = _category_evidence(records, "ecosystem")
-    negative_count = sum(
-        evidence["stance"] == "negative" for evidence in adoption + ecosystem
-    )
-
+    technology: TechName,
+    items: Sequence[MarketEvidenceItem],
+    error_prefix: str,
+) -> MarketResult:
+    categories: dict[str, list[Evidence]] = {
+        "market_size_growth": [],
+        "adoption": [],
+        "ecosystem": [],
+    }
+    for item in items:
+        if item.market_category == "none":
+            continue
+        categories[item.market_category].append(
+            _evidence(item, contextual_market=item.market_category == "market_size_growth")
+        )
+    all_market = [evidence for values in categories.values() for evidence in values]
+    negative_count = sum(evidence["stance"] == "negative" for evidence in all_market)
     summary = (
-        f"{technology} 자체의 직접 시장 규모 자료는 이 공개 검색에서 확인하지 않았으며, "
-        f"시장 규모·성장 자료 {len(market_size_growth)}건은 관련 LLM 추론 및 AI 인프라의 "
-        f"배경 정보로만 분류했다. 채택·배포 관련 근거 {len(adoption)}건과 생태계·연동 "
-        f"관련 근거 {len(ecosystem)}건을 확인했으며, 이 중 명시적 제약 또는 도입 장벽을 "
-        f"포함한 근거는 {negative_count}건이다. 연구팀 자체 발표는 상용 채택으로 확대 "
-        "해석하지 않았고, 공개 근거만으로 기술 추천이나 우열 판단을 하지 않는다."
+        f"{technology} 자체의 직접 시장 규모로 확대 해석하지 않고, 시장 규모·성장 근거 "
+        f"{len(categories['market_size_growth'])}건은 관련 시장의 맥락적 지표로 구분했다. "
+        f"채택 근거 {len(categories['adoption'])}건, 생태계 근거 {len(categories['ecosystem'])}건, "
+        f"실제 내용에서 확인된 한계·반론 근거 {negative_count}건을 확보했다. 공개 근거만으로 "
+        "기술 추천이나 우열을 판단하지 않는다."
     )
-    if search_error_count:
-        summary += f" 검색 {search_error_count}건은 호출 오류로 확인하지 못했다."
-
+    if error_prefix:
+        summary = f"{error_prefix} {summary}"
     return {
-        "market_size_growth": market_size_growth,
-        "adoption": adoption,
-        "ecosystem": ecosystem,
+        "market_size_growth": categories["market_size_growth"],
+        "adoption": categories["adoption"],
+        "ecosystem": categories["ecosystem"],
         "summary": summary,
     }
 
 
-def _merge_reference(
-    references: Dict[str, Dict[str, Any]], reference: Mapping[str, Any]
-) -> None:
-    source_id = str(reference["source_id"])
+def _merge_reference(references: dict[str, Reference], reference: Reference) -> None:
+    source_id = reference["source_id"]
     incoming = dict(reference)
     incoming["used_by"] = list(dict.fromkeys(incoming.get("used_by") or ["market"]))
     existing = references.get(source_id)
     if existing is None:
-        references[source_id] = incoming
+        references[source_id] = incoming  # type: ignore[assignment]
         return
-    existing["used_by"] = list(
-        dict.fromkeys(list(existing.get("used_by", [])) + incoming["used_by"])
-    )
-    if existing.get("stance") != incoming.get("stance"):
+    existing["used_by"] = list(dict.fromkeys(existing["used_by"] + incoming["used_by"]))
+    if existing["stance"] != incoming["stance"]:
         existing["stance"] = "neutral"
     for field in ("author", "date", "title", "venue"):
-        if not existing.get(field) and incoming.get(field):
+        if not existing[field] and incoming[field]:
             existing[field] = incoming[field]
 
 
-def _search_for_technology(
-    technology: str,
-    search_fn: SearchFunction,
-) -> Tuple[List[Dict[str, Any]], List[str]]:
-    records: List[Dict[str, Any]] = []
-    errors: List[str] = []
-    for dimension, stance, query_template in _QUERY_SPECS:
-        query = query_template.format(tech=technology)
-        try:
-            found = search_fn(query, stance=stance, max_results=5, used_by="market")
-        except MissingTavilyAPIKeyError:
-            raise
-        except Exception as exc:
-            errors.append(f"{query}: {exc}")
-            continue
-        for result in found or []:
-            record = dict(result)
-            record["_dimension"] = dimension
-            record["_query_stance"] = stance
-            records.append(record)
-    return records, errors
+def _base_error_prefix(
+    records: Sequence[Mapping[str, Any]],
+    empty_count: int,
+    error_count: int,
+    llm_failed: bool,
+    retrying: bool,
+    retry_count: int,
+) -> str:
+    if llm_failed or error_count:
+        return "[E-1002] 검색 또는 LLM 호출 장애로 일부 근거를 확인하지 못함."
+    if not records:
+        if retrying and retry_count >= config.MAX_RETRY:
+            return "[E-1005] 재조사 상한에 도달했으며 검색 결과를 확보하지 못함."
+        if empty_count:
+            return "[E-1001] 검색 결과 없음."
+    return ""
 
 
 def market_node(
-    state: Mapping[str, Any],
-    search_fn: Optional[SearchFunction] = None,
-) -> Dict[str, Any]:
-    """Return only ``trl_result``, ``market_result``, and ``references``.
+    state: State,
+    *,
+    search_fn: SearchFunction | None = None,
+    structured_client: Any = None,
+) -> dict:
+    """``trl_result``·``market_result``·이번 실행에서 사용한 ``references``만 반환한다."""
 
-    LangGraph can call this with only ``state``. Tests may inject ``search_fn`` to
-    run fully offline. Existing State references are intentionally not copied
-    into the return value because list reducers (such as ``operator.add``) should
-    merge only this node's newly produced references.
-    """
-
-    if not isinstance(state, Mapping):
-        raise TypeError("state must be a mapping compatible with the shared State")
     technologies = _resolve_technologies(state)
     active_search = search_fn or search_web
+    client = structured_client or StructuredClient()
+    trl_reason = retry_hint(state, "trl")
+    market_reason = retry_hint(state, "market")
 
-    records_by_technology: Dict[str, List[Dict[str, Any]]] = {}
-    errors_by_technology: Dict[str, List[str]] = {}
-    references: Dict[str, Dict[str, Any]] = {}
+    records_by_tech: dict[TechName, list[dict[str, Any]]] = {}
+    items_by_tech: dict[TechName, list[MarketEvidenceItem]] = {}
+    status: dict[TechName, tuple[int, int, bool]] = {}
+    for technology in technologies:
+        records, empty_count, error_count = _search_for_technology(
+            technology, active_search, trl_reason, market_reason
+        )
+        items, llm_failed = _validated_items(technology, records, client)
+        records_by_tech[technology] = records
+        items_by_tech[technology] = items
+        status[technology] = (empty_count, error_count, llm_failed)
+
+    successful = [technology for technology in technologies if items_by_tech[technology]]
+    one_tech_only = len(successful) == 1
+    trl_result: dict[TechName, TRLEstimate] = {}
+    market_result: dict[TechName, MarketResult] = {}
+    used_source_ids: set[str] = set()
 
     for technology in technologies:
-        records, errors = _search_for_technology(technology, active_search)
-        records_by_technology[technology] = records
-        errors_by_technology[technology] = errors
-        for record in records:
-            _merge_reference(references, _record_reference(record))
-
-    if not references and all(errors_by_technology.values()):
-        details = " | ".join(
-            errors_by_technology[technology][0]
-            for technology in technologies
-            if errors_by_technology[technology]
+        empty_count, error_count, llm_failed = status[technology]
+        prefix = _base_error_prefix(
+            records_by_tech[technology],
+            empty_count,
+            error_count,
+            llm_failed,
+            bool(trl_reason or market_reason),
+            state.get("retry_count", 0),
         )
-        raise MarketSearchError(f"All market web searches failed. First errors: {details}")
+        if one_tech_only:
+            prefix = "[E-1004] 한 기술만 근거를 확보함. " + prefix
+        trl_result[technology] = _trl_estimate(technology, items_by_tech[technology], prefix)
+        market_result[technology] = _market_result(technology, items_by_tech[technology], prefix)
+        used_source_ids.update(evidence["source_id"] for evidence in trl_result[technology]["evidence"])
+        for field in ("market_size_growth", "adoption", "ecosystem"):
+            used_source_ids.update(
+                evidence["source_id"] for evidence in market_result[technology][field]
+            )
 
-    trl_result = {
-        technology: _trl_estimate(technology, records_by_technology[technology])
-        for technology in technologies
-    }
-    market_result = {
-        technology: _market_result(
-            technology,
-            records_by_technology[technology],
-            len(errors_by_technology[technology]),
-        )
-        for technology in technologies
-    }
+    references: dict[str, Reference] = {}
+    for technology in technologies:
+        for record in records_by_tech[technology]:
+            reference = _record_reference(record)
+            if reference["source_id"] in used_source_ids:
+                _merge_reference(references, reference)
 
     return {
         "trl_result": trl_result,
