@@ -1,0 +1,74 @@
+[
+  {
+    "id": "TQ-01", "technology": "TurboQuant", "document_id": "arxiv:2504.19874",
+    "question_ko": "TurboQuant가 온라인 KV cache 양자화에 적합한 이유를 오프라인 양자화 방식과 비교해 설명하라.",
+    "gold_pages": [4], "section": "1.2 Related Work - Online vs Offline Quantization",
+    "expected_answer_ko": "온라인 방식은 데이터별 튜닝이나 캘리브레이션 없이 즉시 적용되지만, 오프라인 방식은 데이터에 맞춘 전처리와 학습이 필요하다."
+  },
+  {
+    "id": "TQ-02", "technology": "TurboQuant", "document_id": "arxiv:2504.19874",
+    "question_ko": "TurboQuant의 MSE 최적화 방식에서 무작위 회전이 좌표 분포와 양자화 설계에 어떤 효과를 주는가?",
+    "gold_pages": [5], "section": "1.3 Overview of Techniques and Contributions",
+    "expected_answer_ko": "무작위 회전 후 좌표가 Beta 분포를 따르고 고차원에서 거의 독립적인 Gaussian에 가까워져, 좌표별 최적 스칼라 양자화를 적용할 수 있다."
+  },
+  {
+    "id": "TQ-03", "technology": "TurboQuant", "document_id": "arxiv:2504.19874",
+    "question_ko": "TurboQuant의 내적 최적화 양자화는 어떤 두 단계로 구성되며, QJL은 어떤 역할을 하는가?",
+    "gold_pages": [5, 8], "section": "1.3 Overview / 2.2 QJL",
+    "expected_answer_ko": "목표 비트보다 1비트 적은 MSE 양자화로 residual을 줄인 뒤 residual에 1-bit QJL을 적용해 편향 없는 내적 추정을 만든다."
+  },
+  {
+    "id": "TQ-04", "technology": "TurboQuant", "document_id": "arxiv:2504.19874",
+    "question_ko": "TurboQuant의 2.5-bit 설정은 128개 채널에 비트를 어떻게 배분해 만들어지는가?",
+    "gold_pages": [18], "section": "4.3 End-to-end Generation on LongBench",
+    "expected_answer_ko": "outlier 32개 채널은 3-bit, 나머지 96개 채널은 2-bit로 양자화해 평균 2.5-bit를 만든다."
+  },
+  {
+    "id": "TQ-05", "technology": "TurboQuant", "document_id": "arxiv:2504.19874",
+    "question_ko": "Needle-In-A-Haystack 실험에서 사용한 모델, 문맥 길이 범위, KV cache 사용 비율과 TurboQuant의 결과는 무엇인가?",
+    "gold_pages": [17, 19], "section": "4.2 Needle-In-A-Haystack / Figure 4",
+    "expected_answer_ko": "Llama-3.1-8B-Instruct, 4K-104K 토큰, full cache의 25%를 사용했으며 TurboQuant 점수는 0.997로 full-precision 0.997과 같았다."
+  },
+  {
+    "id": "TQ-06", "technology": "TurboQuant", "document_id": "arxiv:2504.19874",
+    "question_ko": "LongBench에서 Llama-3.1-8B-Instruct에 3.5-bit TurboQuant를 적용했을 때 평균 점수는 얼마이며 full cache와 어떻게 비교되는가?",
+    "gold_pages": [20], "section": "Table 1",
+    "expected_answer_ko": "TurboQuant 3.5-bit 평균은 50.06으로 full cache 평균 50.06과 동일하다."
+  },
+  {
+    "id": "IG-01", "technology": "InfiniGen", "document_id": "arxiv:2406.19707",
+    "question_ko": "KV cache 전체를 CPU 메모리로 오프로딩했을 때 무엇이 새로운 병목이 되며, 일반적인 프리페치로 완전히 숨기기 어려운 이유는 무엇인가?",
+    "gold_pages": [4], "section": "3.1 KV Cache in LLM Inference Systems",
+    "expected_answer_ko": "낮은 CPU-GPU PCIe 대역폭 때문에 수백 GB의 KV cache 전송이 병목이 되며, 이전 Transformer block 계산으로는 전송 지연의 일부만 숨길 수 있다."
+  },
+  {
+    "id": "IG-02", "technology": "InfiniGen", "document_id": "arxiv:2406.19707",
+    "question_ko": "InfiniGen은 이전 Transformer layer의 정보를 이용해 다음 layer에서 필요한 KV 항목을 어떻게 추측하고 가져오는가?",
+    "gold_pages": [2, 6], "section": "Introduction / 4.1 Overview",
+    "expected_answer_ko": "이전 layer의 attention input과 다음 layer의 partial query weight 및 partial key cache로 attention pattern을 예측한 뒤 중요한 KV만 CPU에서 GPU로 프리페치한다."
+  },
+  {
+    "id": "IG-03", "technology": "InfiniGen", "document_id": "arxiv:2406.19707",
+    "question_ko": "InfiniGen은 prefill 단계에서 partial query weight와 partial key cache에 사용할 열을 어떻게 선택하며, 논문에서 선택한 비율은 얼마인가?",
+    "gold_pages": [8], "section": "4.3 Efficiently Prefetching KV Cache - Prefill Stage",
+    "expected_answer_ko": "query matrix를 SVD로 skew하고 query/key 행렬의 절댓값을 합한 뒤 column sum의 top-k 열을 고르며 전체 열의 30%를 사용한다."
+  },
+  {
+    "id": "IG-04", "technology": "InfiniGen", "document_id": "arxiv:2406.19707",
+    "question_ko": "InfiniGen의 decoding 단계에서 KV 토큰을 선택하는 threshold는 어떻게 정의되며, alpha가 의미하는 것은 무엇인가?",
+    "gold_pages": [8, 9], "section": "4.3 Efficiently Prefetching KV Cache - Decoding Stage",
+    "expected_answer_ko": "추정 attention score가 maximum score - alpha보다 큰 토큰만 선택한다. alpha=5이면 softmax 후 최대 weight의 약 1/148.4보다 작은 항목을 제외하는 효과가 있다."
+  },
+  {
+    "id": "IG-05", "technology": "InfiniGen", "document_id": "arxiv:2406.19707",
+    "question_ko": "OPT-13B에서 batch size를 4에서 20으로 늘렸을 때 InfiniGen의 처리량은 어떻게 변했으며 INT4와 H2O는 어떻게 비교되는가?",
+    "gold_pages": [12], "section": "5.3 Performance - Batch Size",
+    "expected_answer_ko": "InfiniGen은 27.36에서 41.99 tokens/s로 증가했고, INT4는 12.22에서 14.02, H2O는 21.31에서 25.70으로 증가했다."
+  },
+  {
+    "id": "IG-06", "technology": "InfiniGen", "document_id": "arxiv:2406.19707",
+    "question_ko": "InfiniGen이 정확도와 지연·메모리 사이의 균형을 위해 선택한 alpha와 partial weight ratio는 얼마인가?",
+    "gold_pages": [12, 13], "section": "6.1 Sensitivity Study",
+    "expected_answer_ko": "alpha는 4 또는 5를 사용하고 partial weight ratio는 0.3을 사용한다. alpha가 커지면 더 많은 KV를 가져와 정확도와 지연이 모두 증가하며 ratio 0.3 이상에서는 정확도 개선이 거의 없다."
+  }
+]

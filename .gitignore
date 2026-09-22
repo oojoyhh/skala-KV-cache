@@ -22,6 +22,8 @@ outputs/
 data/index/
 # 웹 검색 캐시 (--use-cache용, 개인 로컬에만)
 data/cache/
+# 논문 pdf 파일
+data/papers/*.pdf
 # python app.py --mermaid 출력 (README에 붙여 넣어 사용)
 docs/graph.mmd
 
