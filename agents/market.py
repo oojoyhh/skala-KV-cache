@@ -1,7 +1,7 @@
 """시장성 및 공개 근거 기반 TRL 평가 노드.
 
-웹 검색 결과를 공용 ``StructuredClient``로 구조화한 뒤, source_id와 원문
-포함 여부를 코드에서 다시 검증한다. TRL 최종 단계는 LLM 응답이 아니라
+웹 검색 결과를 공용 ``StructuredClient``로 구조화한 뒤, 짧은 후보 ID로
+원본 근거를 다시 연결한다. TRL 최종 단계는 LLM 응답이 아니라
 서로 다른 공개 출처 수와 설계서 v5 C-2의 보수적 단계 조건으로 결정한다.
 """
 
@@ -11,7 +11,7 @@ import json
 import re
 from typing import Any, Callable, Iterable, Literal, Mapping, Sequence
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 import config
 from llm import StructuredClient, load_prompt
@@ -51,8 +51,19 @@ _MARKET_QUERY_TEMPLATES: dict[Stance, tuple[str, ...]] = {
 }
 
 
+class MarketEvidenceSelection(BaseModel):
+    """LLM이 짧은 후보 ID와 분류값만 반환하는 구조."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    stance: Stance
+    market_category: MarketCategory = "none"
+    trl_level: int | None = Field(default=None, ge=1, le=9)
+
+
 class MarketEvidenceItem(BaseModel):
-    """LLM이 입력 검색 결과에서 선택하는 구조. Reference 생성은 허용하지 않는다."""
+    """검증 후 원본 검색 결과와 다시 연결된 내부 근거 구조."""
 
     source_id: str
     claim: str
@@ -62,7 +73,9 @@ class MarketEvidenceItem(BaseModel):
 
 
 class MarketClassification(BaseModel):
-    items: list[MarketEvidenceItem] = Field(default_factory=list)
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[MarketEvidenceSelection] = Field(default_factory=list)
 
 
 def _resolve_technologies(state: State) -> tuple[TechName, ...]:
@@ -246,22 +259,25 @@ def _search_for_technology(
 
 
 def _classification_prompt(technology: TechName, records: Sequence[Mapping[str, Any]]) -> str:
-    evidence_input = [
-        {
-            "source_id": _record_reference(record)["source_id"],
-            "title": _record_reference(record)["title"],
-            "content": _content(record),
-            "search_intent": record.get("_query_stance", "neutral"),
-            "search_perspective": record.get("_perspective", "market"),
-        }
-        for record in records
-    ]
+    evidence_input = "\n".join(
+        f"S{index} | "
+        + json.dumps(
+            {
+                "title": _record_reference(record)["title"],
+                "content": _content(record),
+                "search_intent": record.get("_query_stance", "neutral"),
+                "search_perspective": record.get("_perspective", "market"),
+            },
+            ensure_ascii=False,
+        )
+        for index, record in enumerate(records, start=1)
+    )
     return (
         load_prompt("market")
         + "\n\n대상 기술: "
         + technology
-        + "\n입력 검색 결과 JSON:\n"
-        + json.dumps(evidence_input, ensure_ascii=False)
+        + "\n입력 검색 결과 후보:\n"
+        + evidence_input
     )
 
 
@@ -271,10 +287,6 @@ def _coerce_classification(value: Any) -> MarketClassification:
     if hasattr(MarketClassification, "model_validate"):
         return MarketClassification.model_validate(value)
     return MarketClassification.parse_obj(value)
-
-
-def _normalize_text(value: str) -> str:
-    return " ".join(value.casefold().split())
 
 
 def _validated_items(
@@ -290,36 +302,35 @@ def _validated_items(
     except Exception:  # noqa: BLE001 - LLM failures become E-1002 in node output
         return [], True
 
-    by_source = {_record_reference(record)["source_id"]: record for record in records}
-    valid: list[MarketEvidenceItem] = []
-    seen: set[tuple[str, MarketCategory]] = set()
-    for item in classified.items:
-        record = by_source.get(item.source_id)
+    by_id = {f"S{index}": record for index, record in enumerate(records, start=1)}
+    merged: dict[tuple[str, MarketCategory], MarketEvidenceItem] = {}
+    for selection in classified.items:
+        record = by_id.get(selection.id)
         if record is None:
             continue
-        source_text = _normalize_text(f"{record.get('title', '')} {_content(record)}")
-        claim = _normalize_text(item.claim)
-        if not claim or claim not in source_text:
+        claim = _content(record) or str(record.get("title") or "").strip()
+        if not claim:
             continue
 
-        key = (item.source_id, item.market_category)
-        if key in seen:
-            continue
-        seen.add(key)
-        valid.append(
-            MarketEvidenceItem(
-                source_id=item.source_id,
-                claim=item.claim.strip(),
-                stance=item.stance,
-                market_category=item.market_category,
-                trl_level=(
-                    min(item.trl_level, _inferred_trl_ceiling(record))
-                    if item.trl_level is not None
-                    else None
-                ),
-            )
+        source_id = _record_reference(record)["source_id"]
+        validated = MarketEvidenceItem(
+            source_id=source_id,
+            claim=claim,
+            stance=selection.stance,
+            market_category=selection.market_category,
+            trl_level=(
+                min(selection.trl_level, _inferred_trl_ceiling(record))
+                if selection.trl_level is not None
+                else None
+            ),
         )
-    return valid, False
+        key = (source_id, selection.market_category)
+        previous = merged.get(key)
+        previous_level = previous.trl_level if previous and previous.trl_level is not None else 0
+        validated_level = validated.trl_level or 0
+        if previous is None or validated_level > previous_level:
+            merged[key] = validated
+    return list(merged.values()), False
 
 
 def _evidence(item: MarketEvidenceItem, contextual_market: bool = False) -> Evidence:
