@@ -7,17 +7,12 @@ from typing import Any
 
 import config
 from rag.index import FaissIndex
-from rag.loader import PAPER_TITLES
 from rag.loader import PaperLoadError
 from state import Reference
 
 
 LOGGER = logging.getLogger(__name__)
 _INDEX: FaissIndex | None = None
-_PAPER_AUTHORS = {
-    "2504.19874": "Zandieh, A. et al.",
-    "2406.19707": "Lee, W., Lee, J., Seo, J., Sim, J.",
-}
 
 
 def _index() -> FaissIndex:
@@ -31,8 +26,8 @@ def _index() -> FaissIndex:
 def retrieve(query: str, k: int = config.TOP_K) -> list[dict[str, Any]]:
     """질의와 관련된 논문 청크를 최대 ``k``개 반환한다.
 
-    PDF가 없거나 모델·인덱스 로딩에 실패하면 E-1003 로그를 남기고 빈
-    목록을 반환한다. 호출 에이전트는 빈 목록을 근거 부족으로 처리한다.
+    PDF 로딩 실패는 E-1003, 모델·인덱스 준비 실패는 E-1002 로그를
+    남기고 빈 목록을 반환한다. 호출 에이전트는 빈 목록을 근거 부족으로 처리한다.
     """
     if not query.strip() or k <= 0:
         return []
@@ -43,13 +38,16 @@ def retrieve(query: str, k: int = config.TOP_K) -> list[dict[str, Any]]:
             search_type="mmr",
             search_kwargs={
                 "k": k,
-                "fetch_k": max(config.TOP_K * 2, k),
+                "fetch_k": max(config.MMR_FETCH_K, k),
                 "lambda_mult": config.MMR_LAMBDA,
             },
         )
         documents = retriever.invoke(query)
-    except (PaperLoadError, OSError, RuntimeError, ValueError) as error:
+    except PaperLoadError as error:
         LOGGER.warning("[E-1003] RAG 검색 준비 실패: %s", error)
+        return []
+    except (OSError, RuntimeError, ValueError) as error:
+        LOGGER.warning("[E-1002] RAG 검색 준비 실패: %s", error)
         return []
 
     return [
@@ -64,21 +62,24 @@ def retrieve(query: str, k: int = config.TOP_K) -> list[dict[str, Any]]:
     ]
 
 
-def paper_reference(arxiv_id: str) -> Reference:
-    """arXiv 논문 한 편의 문서 단위 Reference를 반환한다.
+def paper_reference(arxiv_id: str, page: int) -> Reference:
+    """arXiv 논문의 페이지 단위 Reference를 반환한다.
 
     Raises:
-        ValueError: 설정된 두 논문 이외의 arXiv ID를 받았을 때 발생한다.
+        ValueError: 페이지가 1보다 작거나 설정되지 않은 arXiv ID일 때 발생한다.
     """
-    for tech, paper in config.PAPERS.items():
+    if page < 1:
+        raise ValueError(f"페이지는 1부터 시작해야 함: {page}")
+
+    for paper in config.PAPERS.values():
         if paper["arxiv_id"] == arxiv_id:
             return {
-                "source_id": f"arxiv:{arxiv_id}",
+                "source_id": f"arxiv:{arxiv_id}#p{page}",
                 "kind": "paper",
-                "author": _PAPER_AUTHORS[arxiv_id],
-                "date": "2025" if tech == "TurboQuant" else "2024",
-                "title": PAPER_TITLES[tech],
-                "venue": f"arXiv, {arxiv_id}",
+                "author": paper["author"],
+                "date": paper["date"],
+                "title": paper["title"],
+                "venue": paper["venue"],
                 "url": f"https://arxiv.org/abs/{arxiv_id}",
                 "used_by": ["research"],
                 "stance": "neutral",

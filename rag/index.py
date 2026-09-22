@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,10 @@ from langchain_text_splitters import TextSplitter
 
 import config
 from rag.loader import PaperLoader
+from rag.loader import PaperLoadError
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _stable_value(value: Any) -> Any:
@@ -94,16 +99,20 @@ class FaissIndex:
     @staticmethod
     def _tokenizer(embeddings: HuggingFaceEmbeddings) -> object:
         """LangChain 래퍼가 가진 SentenceTransformer 토크나이저를 꺼낸다."""
-        return embeddings.client.tokenizer
+        return embeddings._client.tokenizer
 
     def build_or_load(self) -> tuple[list[Document], FAISS]:
         """동일 입력이면 캐시를, 아니면 새 dense FAISS 인덱스를 반환한다."""
-        embeddings = self._embeddings_or_load()
-        splitter = self.loader.get_splitter(self._tokenizer(embeddings))
         paths = {
             tech: Path(paper["path"])
             for tech, paper in config.PAPERS.items()
+            if Path(paper["path"]).is_file()
         }
+        if not paths:
+            raise PaperLoadError("[E-1003] 사용할 수 있는 논문 PDF가 없음")
+
+        embeddings = self._embeddings_or_load()
+        splitter = self.loader.get_splitter(self._tokenizer(embeddings))
         paper_hashes = {
             tech: self._file_hash(path)
             for tech, path in paths.items()
@@ -120,17 +129,22 @@ class FaissIndex:
             "splitter": splitter_identity(splitter),
         }
 
-        if (
+        cache_exists = (
             manifest_path.exists()
             and chunks_path.exists()
             and (index_dir / "index.faiss").exists()
-            and json.loads(manifest_path.read_text(encoding="utf-8")) == manifest
-        ):
-            return self._read_chunks(chunks_path), FAISS.load_local(
-                index_dir,
-                embeddings,
-                allow_dangerous_deserialization=True,
-            )
+        )
+        if cache_exists:
+            try:
+                if json.loads(manifest_path.read_text(encoding="utf-8")) == manifest:
+                    return self._read_chunks(chunks_path), FAISS.load_local(
+                        index_dir,
+                        embeddings,
+                        allow_dangerous_deserialization=True,
+                    )
+            except Exception as error:
+                # 캐시는 재생성 가능한 파생물이므로 손상 시 실행을 중단하지 않는다.
+                LOGGER.warning("[E-1002] 손상된 FAISS 캐시 재생성: %s", error)
 
         index_dir.mkdir(parents=True, exist_ok=True)
         chunks = self.loader.load_chunks(self._tokenizer(embeddings))
@@ -142,4 +156,3 @@ class FaissIndex:
             encoding="utf-8",
         )
         return chunks, vectorstore
-

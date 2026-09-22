@@ -27,6 +27,7 @@ docs/graph.mmd
 
 # ── 비공개 자료 (과제 안내 요약 등 — Slack으로만 배포, 공개 저장소에 올리지 않음) ──
 docs/private/
+data/papers/*.pdf
 
 # ── OS · IDE ─────────────────────────────────────────────
 .DS_Store
