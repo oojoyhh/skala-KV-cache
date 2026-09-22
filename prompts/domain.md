@@ -3,11 +3,12 @@
 반드시 cost, throughput, model_quality, transfer_overhead, deployment_barrier 다섯 목록을 반환한다.
 
 {stance_instruction}
-- claim과 source_id를 변경하거나 새로 만들지 않는다.
-- Evidence가 직접 뒷받침하는 축에만 그대로 선택한다.
+- claim이나 source_id를 복사하거나 반환하지 않는다. 제공된 목록의 id만 선택한다.
+- 새 id를 만들지 않는다. Evidence가 직접 뒷받침하는 축에만 해당 id를 선택한다.
 - 근거가 없는 축은 빈 리스트로 둔다. 모든 축을 채울 필요는 없다.
 - 같은 Evidence는 실제로 여러 축을 뒷받침할 때만 변경 없이 재사용할 수 있다.
 - 수치, 성능, 사실을 추가하지 않는다.
+- 기술 우열이나 추천을 판단하지 않으며, 근거 없는 항목을 선택하지 않는다.
 - 충분성, 재조사, 다음 node, 기술 우열을 판단하지 않는다.
 - summary 필드는 형식 충족용이다. 최종 summary는 Python이 검증된 claim으로 생성한다.
 

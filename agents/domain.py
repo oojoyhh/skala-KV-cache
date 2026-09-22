@@ -10,12 +10,11 @@ from state import DomainResult, Evidence, Reference, State, Stance, TechName, re
 
 
 class DomainEvidenceSelection(BaseModel):
-    """Internal Pydantic model constraining an Evidence item selected by the LLM."""
+    """An LLM selection key and content-derived stance, not copied Evidence."""
 
     model_config = ConfigDict(extra="forbid")
 
-    claim: str = Field(min_length=1)
-    source_id: str = Field(min_length=1)
+    id: str = Field(min_length=1)
     stance: Stance
 
 
@@ -58,14 +57,16 @@ def build_domain_prompt(
     from llm import load_prompt
 
     evidence_text = "\n".join(
-        f"- claim: {item['claim']} | source_id: {item['source_id']} | stance: {item['stance']}"
-        for item in evidence
+        f"- id: E{index} | claim: {item['claim']}"
+        + (f" | stance: {item['stance']}" if not classify_stance else "")
+        for index, item in enumerate(evidence, 1)
     ) or "(No Evidence was provided.)"
     stance_instruction = (
-        "- 각 claim 본문만 근거로 positive, negative, neutral 중 stance를 분류한다. "
-        "검색 의도는 stance 근거가 아니며, 입력의 stance 값은 미분류 placeholder다.\n"
+        "- 각 claim 본문만 근거로 stance를 분류한다. 검색 의도는 stance 근거가 아니며, "
+        "입력 stance는 미분류 placeholder다. positive는 지지 근거, negative는 한계·반론·제약 근거, "
+        "neutral은 중립·배경 근거다.\n"
         if classify_stance
-        else "- 제공된 Evidence의 stance를 변경하지 않는다.\n"
+        else "- 선택한 id의 stance는 Evidence 목록의 stance를 그대로 사용한다.\n"
     )
     return load_prompt("domain").format(
         domain=domain,
@@ -96,12 +97,7 @@ def validate_domain_result(
 ) -> DomainResult:
     """Return the exact DomainResult contract after validating Evidence reuse."""
 
-    input_items = {
-        (item["claim"], item["source_id"], item["stance"])
-        for item in evidence
-    }
-    input_claim_sources = {(item["claim"], item["source_id"]) for item in evidence}
-    input_source_ids = {item["source_id"] for item in evidence}
+    by_id = {f"E{index}": item for index, item in enumerate(evidence, 1)}
     axes = (
         "cost",
         "throughput",
@@ -115,27 +111,20 @@ def validate_domain_result(
     for axis in axes:
         validated: list[Evidence] = []
         for selected in getattr(result, axis):
-            selected_tuple = (selected.claim, selected.source_id, selected.stance)
-            if selected.source_id not in input_source_ids:
-                raise DomainValidationError(
-                    f"{axis} references an unknown source_id: {selected.source_id}"
-                )
-            claim_source = (selected.claim, selected.source_id)
-            if (claim_source not in input_claim_sources if classify_stance else selected_tuple not in input_items):
-                raise DomainValidationError(
-                    f"{axis} contains Evidence not present in the input: {selected.source_id}"
-                )
+            candidate = by_id.get(selected.id)
+            if candidate is None:
+                continue
+            claim_source = (candidate["claim"], candidate["source_id"])
+            stance: Stance = selected.stance if classify_stance else candidate["stance"]
             previous_stance = classified_stances.get(claim_source)
-            if previous_stance is not None and previous_stance != selected.stance:
-                raise DomainValidationError(
-                    f"{axis} assigns conflicting stances to {selected.source_id}"
-                )
-            classified_stances[claim_source] = selected.stance
+            if previous_stance is not None and previous_stance != stance:
+                continue
+            classified_stances.setdefault(claim_source, stance)
             validated.append(
                 {
-                    "claim": selected.claim,
-                    "source_id": selected.source_id,
-                    "stance": selected.stance,
+                    "claim": candidate["claim"],
+                    "source_id": candidate["source_id"],
+                    "stance": stance,
                 }
             )
         validated_axes[axis] = validated
