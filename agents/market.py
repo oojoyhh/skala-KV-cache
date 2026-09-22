@@ -400,10 +400,29 @@ def _evidence(item: MarketEvidenceItem, contextual_market: bool = False) -> Evid
     return {"claim": claim, "source_id": item.source_id, "stance": item.stance}
 
 
+def _canonical_trl3_evidence(state: State, technology: TechName) -> list[Evidence]:
+    """실험·benchmark를 명시한 canonical paper Evidence만 TRL 3 근거로 반환한다."""
+
+    arxiv_id = config.PAPERS[technology]["arxiv_id"]
+    source_prefix = f"arxiv:{arxiv_id}#p"
+    experimental_signal = (
+        r"\b(experiment(?:al|s)?|benchmark(?:ed|s)?|evaluation|results?|speedup|latency|"
+        r"throughput)\b|실험\s*결과|벤치마크|성능\s*평가|처리량|지연"
+    )
+    evidence = state.get("tech_summary", {}).get(technology, {}).get("evidence", [])
+    return [
+        item
+        for item in evidence
+        if item["source_id"].startswith(source_prefix)
+        and _contains(item["claim"], experimental_signal)
+    ]
+
+
 def _trl_estimate(
     technology: TechName,
     items: Sequence[MarketEvidenceItem],
     error_prefix: str,
+    baseline_evidence: Sequence[Evidence] = (),
 ) -> TRLEstimate:
     level_by_source: dict[str, int] = {}
     item_by_source: dict[str, MarketEvidenceItem] = {}
@@ -419,10 +438,17 @@ def _trl_estimate(
         if sum(level >= candidate for level in level_by_source.values()) >= 2:
             confirmed_level = candidate
             break
+    if baseline_evidence:
+        confirmed_level = max(confirmed_level, 3)
 
     highest = max(level_by_source.values(), default=1)
     count = sum(level >= confirmed_level for level in level_by_source.values())
-    if len(level_by_source) < 2:
+    if confirmed_level == 3 and baseline_evidence:
+        rationale = (
+            f"{technology} canonical paper의 실제 실험·benchmark Evidence를 확인해 "
+            "개념 검증 단계인 TRL 3으로 추정했다."
+        )
+    elif len(level_by_source) < 2:
         rationale = (
             f"{technology}의 서로 다른 공개 source_id가 2개 미만이어서 TRL 1로 보수적으로 추정했다."
         )
@@ -445,6 +471,12 @@ def _trl_estimate(
     if error_prefix:
         uncertainty = f"{error_prefix} {uncertainty}"
     evidence = [_evidence(item_by_source[source_id]) for source_id in level_by_source]
+    used_source_ids = {item["source_id"] for item in evidence}
+    for item in baseline_evidence:
+        if item["source_id"] in used_source_ids:
+            continue
+        evidence.append(item)
+        used_source_ids.add(item["source_id"])
     return {
         "level": confirmed_level,
         "rationale": rationale,
@@ -566,7 +598,12 @@ def market_node(
         )
         if one_tech_only:
             prefix = "[E-1004] 한 기술만 근거를 확보함. " + prefix
-        trl_result[technology] = _trl_estimate(technology, items_by_tech[technology], prefix)
+        trl_result[technology] = _trl_estimate(
+            technology,
+            items_by_tech[technology],
+            prefix,
+            _canonical_trl3_evidence(state, technology),
+        )
         market_result[technology] = _market_result(technology, items_by_tech[technology], prefix)
         used_source_ids.update(evidence["source_id"] for evidence in trl_result[technology]["evidence"])
         for field in ("market_size_growth", "adoption", "ecosystem"):
