@@ -1,8 +1,9 @@
 """2번 기술 조사 노드의 공유 State 계약·오류 처리 테스트."""
 
 import unittest
+from unittest.mock import patch
 
-from agents.research import research_node
+from agents.research import _default_generate, _validate_summary, research_node
 from state import TECHS, make_initial_state
 from tests.fixtures import sample_state_after_research
 
@@ -39,6 +40,27 @@ def fake_retrieve(query, k):
 
 
 class ResearchNodeTest(unittest.TestCase):
+    def test_default_generator_uses_structured_metric_entries(self):
+        chunk = fake_retrieve("retry", 10)[0]
+
+        def fake_structured(prompt, response_model, role):
+            self.assertEqual(role, "generator")
+            self.assertEqual(response_model.model_json_schema()["properties"]["key_metrics"]["type"], "array")
+            return response_model(
+                name="TurboQuant", camp="SW", approach="논문에서 확인한 방식",
+                scope="논문에서 확인한 적용 범위",
+                key_metrics=[{"name": "측정 결과", "value": "41.99 tokens/s"}],
+                limitations=[],
+                evidence=[{"claim": "측정 결과 41.99 tokens/s",
+                           "source_id": chunk["source_id"], "stance": "positive"}],
+            )
+
+        with patch("llm.structured", side_effect=fake_structured), patch("llm.load_prompt", return_value=""):
+            draft = _default_generate("TurboQuant", "SW", [chunk])
+        summary = _validate_summary(draft, "TurboQuant", [chunk])
+        self.assertEqual(summary["key_metrics"], {"측정 결과": "41.99 tokens/s"})
+        self.assertEqual(summary["evidence"][0]["source_id"], chunk["source_id"])
+
     def test_rewrites_and_returns_shared_state_shape(self):
         output = research_node(
             make_initial_state(), retrieve_fn=fake_retrieve, generate_fn=fake_generate,

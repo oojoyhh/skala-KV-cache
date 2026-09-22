@@ -104,12 +104,16 @@ def _default_generate(name: TechName, camp: str, chunks: Sequence[dict[str, Any]
         source_id: str
         stance: str
 
+    class MetricEntry(BaseModel):
+        name: str
+        value: str
+
     class ResearchDraft(BaseModel):
         name: str
         camp: str
         approach: str
         scope: str
-        key_metrics: dict[str, str]
+        key_metrics: list[MetricEntry]
         limitations: list[str]
         evidence: list[CitedClaim]
 
@@ -134,6 +138,22 @@ def _validate_summary(
     if raw.get("name") != name or raw.get("camp") != camp:
         raise ValueError("기술명 또는 진영이 입력과 다릅니다.")
     metrics = raw.get("key_metrics")
+    if isinstance(metrics, list):
+        entries: dict[str, str] = {}
+        for item in metrics:
+            if not isinstance(item, Mapping):
+                raise ValueError("key_metrics 항목 형식이 잘못되었습니다.")
+            metric_name = item.get("name")
+            metric_value = item.get("value")
+            if (
+                not isinstance(metric_name, str)
+                or not metric_name.strip()
+                or not isinstance(metric_value, str)
+                or metric_name.strip() in entries
+            ):
+                raise ValueError("key_metrics 항목명 또는 값이 유효하지 않습니다.")
+            entries[metric_name.strip()] = metric_value
+        metrics = entries
     if not isinstance(metrics, Mapping):
         raise ValueError("key_metrics는 항목명-측정값 사전이어야 합니다.")
     allowed = {chunk["source_id"] for chunk in chunks}
