@@ -4,14 +4,17 @@ import json
 import config
 from agents.market import (
     MarketEvidenceItem,
+    _canonical_trl3_evidence,
     _inferred_trl_ceiling,
+    _is_relevant_candidate,
+    _query_specs,
     _trl_estimate,
     _validated_items,
     market_node,
 )
 from state import TECHS, make_initial_state
 from tests.fixtures import sample_state_after_research
-from tools.web_search import search_web
+from tools.web_search import make_source_id, search_web
 
 
 def _record(query, stance, index=0):
@@ -102,8 +105,12 @@ def test_node_contract_and_both_technologies():
 
 
 def test_result_schemas_and_reference_links():
-    result = _run()
-    reference_ids = {reference["source_id"] for reference in result["references"]}
+    state = sample_state_after_research()
+    result = _run(state)
+    reference_ids = {
+        reference["source_id"]
+        for reference in [*state["references"], *result["references"]]
+    }
     for tech in TECHS:
         assert set(result["trl_result"][tech]) == {"level", "rationale", "evidence", "uncertainty"}
         assert set(result["market_result"][tech]) == {
@@ -201,6 +208,34 @@ def test_one_high_stage_source_records_possibility_without_promotion():
     assert "가능성" in estimate["rationale"]
 
 
+def test_canonical_paper_experiment_evidence_sets_trl3_baseline():
+    state = sample_state_after_research()
+    baseline = _canonical_trl3_evidence(state, "TurboQuant")
+    estimate = _trl_estimate("TurboQuant", [], "", baseline)
+
+    assert baseline
+    assert estimate["level"] == 3
+    assert estimate["evidence"] == baseline
+    assert all(item["source_id"].startswith("arxiv:2504.19874#p") for item in baseline)
+
+
+def test_canonical_paper_without_experiment_does_not_set_trl3_baseline():
+    state = sample_state_after_research()
+    state["tech_summary"]["TurboQuant"]["evidence"] = [
+        {
+            "claim": "TurboQuant의 개념과 구조를 소개한다.",
+            "source_id": "arxiv:2504.19874#p1",
+            "stance": "neutral",
+        }
+    ]
+    baseline = _canonical_trl3_evidence(state, "TurboQuant")
+    estimate = _trl_estimate("TurboQuant", [], "", baseline)
+
+    assert baseline == []
+    assert estimate["level"] == 1
+    assert estimate["evidence"] == []
+
+
 class NeutralStructuredClient(FakeStructuredClient):
     def invoke(self, prompt, response_model):
         result = super().invoke(prompt, response_model)
@@ -272,6 +307,311 @@ def test_validated_korean_support_keeps_llm_positive_stance():
             )
 
     items, failed = _validated_items("TurboQuant", [record], KoreanSupportClient())
+    assert not failed
+    assert items[0].stance == "positive"
+
+
+def test_infinigen_queries_keep_kv_cache_llm_anchors_on_initial_and_retry():
+    for trl_reason, market_reason in (
+        ("", ""),
+        ("InfiniGen: TRL Evidence 부족", "InfiniGen: 반론 근거 미확인"),
+    ):
+        specs = _query_specs("InfiniGen", trl_reason, market_reason)
+        assert {stance for _, stance, _ in specs} == {"neutral", "positive", "negative"}
+        for _, _, query in specs:
+            lowered = query.casefold()
+            assert "infinigen" in lowered
+            assert "kv cache" in lowered
+            assert "llm" in lowered or "large language model" in lowered
+
+
+def _infinigen_record(source_id, title, content, stance="neutral"):
+    return {
+        "source_id": source_id,
+        "kind": "web",
+        "author": "Example Author",
+        "date": "2026-01-01",
+        "title": title,
+        "venue": "example.org",
+        "url": f"https://example.org/{source_id.removeprefix('web:')}",
+        "used_by": ["market"],
+        "stance": stance,
+        "content": content,
+    }
+
+
+def test_infinigen_relevance_rejects_photorealistic_procedural_world():
+    wrong = _infinigen_record(
+        "web:wrong3d001",
+        "Infinite Photorealistic Worlds using Procedural Generation",
+        "Princeton researchers introduce Infinigen, a procedural generator for infinite "
+        "photorealistic 3D scenes, shapes, textures and materials.",
+    )
+    assert not _is_relevant_candidate("InfiniGen", wrong)
+
+
+def test_infinigen_relevance_rejects_exact_hacker_news_3d_title():
+    wrong = _infinigen_record(
+        "web:wronghn001",
+        "Infinigen: Infinite Photorealistic Worlds Using Procedural Generation",
+        "Infinigen is a procedural generator for infinite photorealistic 3D worlds, "
+        "scenes, shapes, textures and materials.",
+    )
+    wrong["venue"] = "news.ycombinator.com"
+    wrong["url"] = "https://news.ycombinator.com/item?id=wronghn001"
+    assert not _is_relevant_candidate("InfiniGen", wrong)
+
+
+def test_infinigen_relevance_rejects_blog_style_3d_project_by_content():
+    wrong = _infinigen_record(
+        "web:wrong3d002",
+        "Princeton's Infinigen can generate unlimited 3D scenes",
+        "Procedural generation with Blender creates shapes, materials, and photorealistic "
+        "environments.",
+    )
+    assert not _is_relevant_candidate("InfiniGen", wrong)
+
+
+def test_infinigen_relevance_accepts_kv_cache_paper_and_market_article():
+    paper = _infinigen_record(
+        "web:rightkv001",
+        "InfiniGen: Efficient Generative Inference of Large Language Models with Dynamic "
+        "KV Cache Management",
+        "InfiniGen offloads KV cache to host memory and dynamically prefetches entries for "
+        "LLM inference.",
+    )
+    market_article = _infinigen_record(
+        "web:rightkv002",
+        "InfiniGen-style offloading reduces serving memory pressure",
+        "An LLM serving system uses InfiniGen-style KV cache offloading to reduce GPU "
+        "memory pressure.",
+    )
+    assert _is_relevant_candidate("InfiniGen", paper)
+    assert _is_relevant_candidate("InfiniGen", market_article)
+
+
+def test_infinigen_relevance_does_not_reject_princeton_word_alone():
+    relevant = _infinigen_record(
+        "web:rightkv003",
+        "Princeton seminar reviews InfiniGen for LLM inference",
+        "The seminar discusses KV cache offloading to host memory for LLM serving.",
+    )
+    assert _is_relevant_candidate("InfiniGen", relevant)
+
+
+def test_market_node_removes_3d_infinigen_before_llm_evidence_and_references():
+    calls = 0
+    wrong_ids = {"web:wrong3d001", "web:wrong3d002"}
+    correct_ids = set()
+
+    def mixed_search(query, stance="neutral", **kwargs):
+        nonlocal calls
+        if "InfiniGen" not in query:
+            return [_record(query, stance)]
+        calls += 1
+        paper_id = f"web:rightpaper{calls:02d}"
+        market_id = f"web:rightmarket{calls:02d}"
+        correct_ids.update((paper_id, market_id))
+        return [
+            _infinigen_record(
+                "web:wrong3d001",
+                "Infinite Photorealistic Worlds using Procedural Generation",
+                "Princeton Infinigen generates photorealistic 3D scenes with procedural "
+                "generation, shapes, textures, and materials.",
+                stance,
+            ),
+            _infinigen_record(
+                paper_id,
+                "InfiniGen: Efficient Generative Inference of Large Language Models with "
+                "Dynamic KV Cache Management",
+                "InfiniGen prototype offloads KV cache to host memory and prefetches entries "
+                "for LLM inference benchmark evaluation.",
+                stance,
+            ),
+            _infinigen_record(
+                "web:wrong3d002",
+                "Princeton's Infinigen can generate unlimited 3D scenes",
+                "The Blender procedural generator creates shapes and textures for scene "
+                "generation.",
+                stance,
+            ),
+            _infinigen_record(
+                market_id,
+                "InfiniGen-style KV cache offloading for LLM serving",
+                "An LLM serving framework uses InfiniGen-style KV cache offloading to reduce "
+                "GPU memory pressure and deployment overhead.",
+                stance,
+            ),
+        ]
+
+    class CapturingClient(FakeStructuredClient):
+        def __init__(self):
+            self.prompts = []
+
+        def invoke(self, prompt, response_model):
+            self.prompts.append(prompt)
+            return super().invoke(prompt, response_model)
+
+    client = CapturingClient()
+    result = _run(search_fn=mixed_search, client=client)
+    infinigen_evidence = list(result["trl_result"]["InfiniGen"]["evidence"])
+    for field in ("market_size_growth", "adoption", "ecosystem"):
+        infinigen_evidence.extend(result["market_result"]["InfiniGen"][field])
+    evidence_ids = {evidence["source_id"] for evidence in infinigen_evidence}
+    reference_ids = {reference["source_id"] for reference in result["references"]}
+    infinigen_prompt = next(
+        prompt for prompt in client.prompts if "대상 기술: InfiniGen" in prompt
+    )
+
+    assert evidence_ids & correct_ids
+    assert not evidence_ids & wrong_ids
+    assert reference_ids & correct_ids
+    assert not reference_ids & wrong_ids
+    assert "Infinite Photorealistic Worlds" not in infinigen_prompt
+    assert "unlimited 3D scenes" not in infinigen_prompt
+    assert "Dynamic KV Cache Management" in infinigen_prompt
+    summary = result["market_result"]["InfiniGen"]["summary"].casefold()
+    assert all(
+        phrase not in summary
+        for phrase in (
+            "procedural generation",
+            "photorealistic worlds",
+            "unlimited 3d scenes",
+            "shapes",
+            "textures",
+            "materials",
+        )
+    )
+
+
+def test_cached_search_roundtrip_removes_hn_3d_infinigen(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "SEARCH_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "USE_SEARCH_CACHE", False)
+    monkeypatch.setattr(config, "SEARCH_EXCLUDE_DOMAINS", [])
+    monkeypatch.setattr(config, "SEARCH_MIN_DATE", "")
+
+    wrong_url = "https://news.ycombinator.com/item?id=wrong-cache"
+    wrong_id = make_source_id(wrong_url)
+    valid_ids = set()
+
+    class CacheWriter:
+        def __init__(self, results):
+            self.results = results
+
+        def search(self, **kwargs):
+            return {"results": self.results}
+
+    for technology in TECHS:
+        for _, stance, query in _query_specs(technology, "", ""):
+            if technology == "InfiniGen":
+                digest = hashlib.sha1(f"{query}:{stance}".encode()).hexdigest()[:10]
+                valid_url = f"https://valid.example/infinigen-kv/{digest}"
+                valid_ids.add(make_source_id(valid_url))
+                raw_results = [
+                    {
+                        "url": wrong_url,
+                        "title": "Infinigen: Infinite Photorealistic Worlds Using "
+                        "Procedural Generation",
+                        "content": "Infinigen is a procedural generator for infinite "
+                        "photorealistic 3D worlds, scenes, shapes, textures and materials.",
+                        "published_date": "2023-06-01",
+                    },
+                    {
+                        "url": valid_url,
+                        "title": "InfiniGen KV cache offloading for LLM inference",
+                        "content": "InfiniGen prototype offloads KV cache to host memory and "
+                        "prefetches entries for LLM serving benchmark evaluation.",
+                        "published_date": "2024-06-01",
+                    },
+                ]
+            else:
+                raw_results = [_record(query, stance)]
+            records = search_web(
+                query,
+                stance,
+                max_results=config.WEB_SEARCH_MAX_RESULTS,
+                used_by="market",
+                client=CacheWriter(raw_results),
+            )
+            assert records
+
+    monkeypatch.setattr(config, "USE_SEARCH_CACHE", True)
+
+    class NoLiveClient:
+        def __init__(self):
+            self.calls = []
+
+        def search(self, **kwargs):
+            self.calls.append(kwargs)
+            raise AssertionError("cache miss must not trigger a live request")
+
+    no_live = NoLiveClient()
+
+    def cached_search(query, stance="neutral", max_results=None, used_by="market", **kwargs):
+        return search_web(
+            query,
+            stance,
+            max_results=max_results,
+            used_by=used_by,
+            client=no_live,
+        )
+
+    result = _run(search_fn=cached_search)
+    evidence = list(result["trl_result"]["InfiniGen"]["evidence"])
+    for field in ("market_size_growth", "adoption", "ecosystem"):
+        evidence.extend(result["market_result"]["InfiniGen"][field])
+    evidence_ids = {item["source_id"] for item in evidence}
+    reference_ids = {item["source_id"] for item in result["references"]}
+
+    assert no_live.calls == []
+    assert wrong_id not in evidence_ids
+    assert wrong_id not in reference_ids
+    assert evidence_ids & valid_ids
+    assert reference_ids & valid_ids
+
+
+def test_positive_query_critical_content_keeps_negative_classification():
+    record = {
+        **_record("TurboQuant discussion", "positive"),
+        "title": "Discussion of TurboQuant",
+        "content": "The paper contains technical errors and uses misleading comparisons "
+        "against prior quantization methods.",
+        "_perspective": "market",
+        "_query_stance": "positive",
+    }
+
+    class CriticalContentClient:
+        def invoke(self, prompt, response_model):
+            return response_model(
+                items=[
+                    {"id": "S1", "stance": "negative", "market_category": "adoption"}
+                ]
+            )
+
+    items, failed = _validated_items("TurboQuant", [record], CriticalContentClient())
+    assert not failed
+    assert items[0].stance == "negative"
+
+
+def test_negative_query_supportive_content_keeps_positive_classification():
+    record = {
+        **_record("TurboQuant deployment", "negative"),
+        "title": "TurboQuant deployment support",
+        "content": "TurboQuant integrates with the serving framework and reduces memory "
+        "use in deployment.",
+        "_perspective": "market",
+        "_query_stance": "negative",
+    }
+
+    class SupportiveContentClient:
+        def invoke(self, prompt, response_model):
+            return response_model(
+                items=[
+                    {"id": "S1", "stance": "positive", "market_category": "ecosystem"}
+                ]
+            )
+
+    items, failed = _validated_items("TurboQuant", [record], SupportiveContentClient())
     assert not failed
     assert items[0].stance == "positive"
 
@@ -555,7 +895,14 @@ def test_invalid_llm_candidate_id_is_rejected():
 
     result = _run(client=HallucinatingClient())
     assert result["references"] == []
-    assert all(result["trl_result"][tech]["evidence"] == [] for tech in TECHS)
+    assert all(
+        result["trl_result"][tech]["evidence"]
+        and all(
+            evidence["source_id"].startswith(f"arxiv:{config.PAPERS[tech]['arxiv_id']}#p")
+            for evidence in result["trl_result"][tech]["evidence"]
+        )
+        for tech in TECHS
+    )
 
 
 def test_no_real_tavily_or_openai_calls_are_needed():
