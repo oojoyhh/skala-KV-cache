@@ -7,6 +7,7 @@ from agents.domain import (
     DomainStructuredResponse,
     DomainValidationError,
     Evidence,
+    build_domain_prompt,
     domain_node,
     evaluate_domain,
 )
@@ -122,6 +123,18 @@ class DomainEvaluationTests(unittest.TestCase):
         self.assertEqual(result["cost"], [self.evidence[0]])
         self.assertEqual(result["deployment_barrier"], [self.evidence[4]])
         self.assertIn("source_id: ref-transfer", client.prompt)
+
+    def test_content_classification_prompt_allows_stance_classification_only_in_node_mode(self) -> None:
+        content_classification = build_domain_prompt(
+            self.domain,
+            self.evidence[:1],
+            classify_stance=True,
+        )
+        supplied_evidence = build_domain_prompt(self.domain, self.evidence[:1])
+
+        self.assertIn("claim 본문만 근거로 positive, negative, neutral 중 stance를 분류", content_classification)
+        self.assertNotIn("stance도 바꾸지 않는다", content_classification)
+        self.assertIn("Evidence의 stance를 변경하지 않는다", supplied_evidence)
 
     def test_empty_axis_is_a_valid_result(self) -> None:
         response = DomainStructuredResponse(
