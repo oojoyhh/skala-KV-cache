@@ -7,9 +7,9 @@ from state import TECHS, make_initial_state
 from tests.fixtures import sample_state_after_research
 
 
-def fake_reference(arxiv_id):
+def fake_reference(arxiv_id, page):
     return {
-        "source_id": f"arxiv:{arxiv_id}", "kind": "paper", "author": "Test Author",
+        "source_id": f"arxiv:{arxiv_id}#p{page}", "kind": "paper", "author": "Test Author",
         "date": "2025", "title": "Test Paper", "venue": "arXiv",
         "url": f"https://arxiv.org/abs/{arxiv_id}", "used_by": ["research"],
         "stance": "neutral",
@@ -49,12 +49,46 @@ class ResearchNodeTest(unittest.TestCase):
         self.assertEqual(set(output), {"tech_summary", "references"})
         self.assertEqual(set(output["tech_summary"]), set(TECHS))
         self.assertEqual(len(output["references"]), 2)
+        self.assertEqual(
+            {ref["source_id"] for ref in output["references"]},
+            {summary["evidence"][0]["source_id"] for summary in output["tech_summary"].values()},
+        )
         self.assertIsInstance(output["tech_summary"]["TurboQuant"]["key_metrics"], dict)
         self.assertEqual(
             set(output["tech_summary"]["TurboQuant"]),
             set(sample_state_after_research()["tech_summary"]["TurboQuant"]),
         )
         self.assertEqual(output["tech_summary"]["InfiniGen"]["evidence"][0]["stance"], "positive")
+
+    def test_references_match_every_cited_page(self):
+        def two_page_generate(name, camp, chunks):
+            draft = fake_generate(name, camp, chunks)
+            draft["evidence"] = [
+                {"claim": "측정 결과 41.99 tokens/s",
+                 "source_id": chunk["source_id"], "stance": "positive"}
+                for chunk in chunks[:2]
+            ]
+            return draft
+
+        output = research_node(
+            make_initial_state(),
+            retrieve_fn=lambda query, k: fake_retrieve(query + " retry", k),
+            generate_fn=two_page_generate,
+            grade_fn=lambda _query, _chunk: True,
+            reference_fn=fake_reference,
+        )
+        evidence_ids = {
+            item["source_id"]
+            for summary in output["tech_summary"].values()
+            for item in summary["evidence"]
+        }
+        reference_ids = {ref["source_id"] for ref in output["references"]}
+        self.assertEqual(reference_ids, evidence_ids)
+        self.assertEqual(len(reference_ids), 4)
+        self.assertEqual(
+            {"arxiv:2504.19874#p2", "arxiv:2504.19874#p3"},
+            {source_id for source_id in reference_ids if "2504.19874" in source_id},
+        )
 
     def test_one_technology_can_fail_without_stopping_graph(self):
         def only_turboquant(query, k):
@@ -101,6 +135,28 @@ class ResearchNodeTest(unittest.TestCase):
         )
         self.assertEqual(output["references"], [])
         self.assertTrue(all(not output["tech_summary"][name]["evidence"] for name in TECHS))
+
+    def test_invalid_numeric_evidence_is_dropped_without_losing_valid_evidence(self):
+        def one_invalid_claim(name, camp, chunks):
+            draft = fake_generate(name, camp, chunks)
+            draft["evidence"].append({
+                "claim": "처리량 9999 tokens/s",
+                "source_id": chunks[1]["source_id"],
+                "stance": "positive",
+            })
+            return draft
+
+        output = research_node(
+            make_initial_state(),
+            retrieve_fn=lambda query, k: fake_retrieve(query + " retry", k),
+            generate_fn=one_invalid_claim,
+            grade_fn=lambda _query, _chunk: True,
+            reference_fn=fake_reference,
+        )
+        self.assertEqual(len(output["references"]), 2)
+        for name in TECHS:
+            self.assertEqual(len(output["tech_summary"][name]["evidence"]), 1)
+            self.assertEqual(output["tech_summary"][name]["limitations"], ["논문에서 확인한 한계"])
 
 
 if __name__ == "__main__":

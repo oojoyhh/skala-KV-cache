@@ -18,7 +18,7 @@ RetrieveFn = Callable[[str, int], Sequence[Mapping[str, Any]]]
 GenerateFn = Callable[[TechName, str, Sequence[dict[str, Any]]], Any]
 GradeFn = Callable[[str, Mapping[str, Any]], bool]
 RewriteFn = Callable[[str, TechName, int], str]
-ReferenceFn = Callable[[str], Reference]
+ReferenceFn = Callable[[str, int], Reference]
 
 QUERY_HINTS = {
     "TurboQuant": "random rotation scalar quantization QJL KV cache LongBench limitations",
@@ -154,7 +154,8 @@ def _validate_summary(
             number not in text_by_source[source_id]
             for number in re.findall(r"\d+(?:\.\d+)?", claim)
         ):
-            raise ValueError("인용된 페이지에 없는 숫자가 Evidence 주장에 있습니다.")
+            # 근거 없는 수치 주장만 제외하고, 검증된 다른 Evidence는 유지한다.
+            continue
         evidence.append({"claim": claim, "source_id": source_id, "stance": stance})
     if not raw.get("approach") or not raw.get("scope") or not evidence:
         raise ValueError("기술 원리, 적용 범위 또는 인용 근거가 누락되었습니다.")
@@ -183,11 +184,11 @@ def _research_one(
     grade_fn: GradeFn | None,
     rewrite_fn: RewriteFn | None,
     reference_fn: ReferenceFn | None,
-) -> tuple[TechSummary, Reference | None]:
+) -> tuple[TechSummary, list[Reference]]:
     paper = config.PAPERS[name]
     arxiv_id = paper["arxiv_id"]
     if retrieve_fn is None and not Path(paper["path"]).is_file():
-        return _empty_summary(name, f"[E-1003] 논문 PDF를 찾을 수 없음: {paper['path']}"), None
+        return _empty_summary(name, f"[E-1003] 논문 PDF를 찾을 수 없음: {paper['path']}"), []
 
     try:
         if retrieve_fn is None or reference_fn is None:
@@ -213,13 +214,21 @@ def _research_one(
             if attempt < config.RAG_MAX_REWRITE:
                 query = rewriter(query, name, attempt + 1)
         if len(relevant) < len(config.PAPERS):
-            return _empty_summary(name, f"[E-1001] 관련 논문 근거 부족: {name}"), None
+            return _empty_summary(name, f"[E-1001] 관련 논문 근거 부족: {name}"), []
         summary = _validate_summary(generator(name, "SW" if name == config.TECH_SW else "HW", relevant), name, relevant)
-        return summary, reference_fn(arxiv_id)
+        cited_chunks = {chunk["source_id"]: chunk for chunk in relevant}
+        references: list[Reference] = []
+        for source_id in dict.fromkeys(item["source_id"] for item in summary["evidence"]):
+            chunk = cited_chunks[source_id]
+            reference = reference_fn(chunk["arxiv_id"], chunk["page"])
+            if reference["source_id"] != source_id:
+                raise ValueError("논문 Reference와 Evidence의 source_id가 다릅니다.")
+            references.append(reference)
+        return summary, references
     except (FileNotFoundError, OSError):
-        return _empty_summary(name, "[E-1003] 논문 PDF 또는 인덱스를 읽지 못함"), None
+        return _empty_summary(name, "[E-1003] 논문 PDF 또는 인덱스를 읽지 못함"), []
     except Exception:  # 외부 검색·LLM 또는 구조화 결과 오류는 전체 그래프를 중단하지 않는다.
-        return _empty_summary(name, "[E-1002] 논문 검색 또는 구조화 출력 실패"), None
+        return _empty_summary(name, "[E-1002] 논문 검색 또는 구조화 출력 실패"), []
 
 
 def research_node(
@@ -235,12 +244,11 @@ def research_node(
     summaries: dict[TechName, TechSummary] = {}
     references: list[Reference] = []
     for name in TECHS:
-        summary, reference = _research_one(
+        summary, cited_references = _research_one(
             name, retrieve_fn, generate_fn, grade_fn, rewrite_fn, reference_fn
         )
         summaries[name] = summary
-        if reference is not None:
-            references.append(reference)
+        references.extend(cited_references)
     succeeded = [name for name in TECHS if summaries[name]["evidence"]]
     if len(succeeded) == 1:
         failed = next(name for name in TECHS if name not in succeeded)
