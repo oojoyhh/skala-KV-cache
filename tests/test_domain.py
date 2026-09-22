@@ -57,6 +57,38 @@ class FailingStructuredClient:
         raise RuntimeError("LLM unavailable")
 
 
+class ContentStanceDomainClient:
+    """Returns stance classifications based on the fixed candidate content."""
+
+    def invoke(self, prompt: str, response_model: type[DomainStructuredResponse]) -> DomainStructuredResponse:
+        return response_model(
+            cost=[{"claim": "The technique reduces serving memory use.", "source_id": "web:support", "stance": "positive"}],
+            throughput=[{"claim": "The technique adds deployment complexity.", "source_id": "web:limit", "stance": "negative"}],
+            model_quality=[{"claim": "The vendor published implementation details.", "source_id": "web:neutral", "stance": "neutral"}],
+            transfer_overhead=[], deployment_barrier=[], summary="Ignored by deterministic summary generation.",
+        )
+
+
+def content_mismatch_search(query: str, stance: str, **_: object) -> list[dict]:
+    """Return content whose meaning deliberately differs from query intent."""
+
+    records = {
+        "negative": [("web:support", "The technique reduces serving memory use.")],
+        "positive": [
+            ("web:limit", "The technique adds deployment complexity."),
+            ("web:neutral", "The vendor published implementation details."),
+        ],
+    }
+    return [
+        {
+            "source_id": source_id, "kind": "web", "author": "Test Org", "date": "2026-01-01",
+            "title": content, "venue": "test", "url": f"https://example.test/{source_id}",
+            "used_by": ["domain"], "stance": stance, "content": content,
+        }
+        for source_id, content in records[stance]
+    ]
+
+
 class DomainEvaluationTests(unittest.TestCase):
     domain = "datacenter/cloud serving"
 
@@ -123,7 +155,9 @@ class DomainEvaluationTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(DomainValidationError, "unknown source_id"):
-            evaluate_domain(self.domain, self.evidence, FakeStructuredOutputClient(response))
+            evaluate_domain(
+                self.domain, self.evidence, FakeStructuredOutputClient(response), classify_stance=True
+            )
 
     def test_model_created_evidence_is_rejected(self) -> None:
         response = DomainStructuredResponse(
@@ -132,7 +166,9 @@ class DomainEvaluationTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(DomainValidationError, "not present in the input"):
-            evaluate_domain(self.domain, self.evidence, FakeStructuredOutputClient(response))
+            evaluate_domain(
+                self.domain, self.evidence, FakeStructuredOutputClient(response), classify_stance=True
+            )
 
     def test_same_evidence_can_be_reused_across_axes(self) -> None:
         response = DomainStructuredResponse(
@@ -270,6 +306,28 @@ class DomainNodeTests(unittest.TestCase):
         update = domain_node(self.state, search_fn=fake_search, client=self.client)
 
         self.assertFalse(existing_ids & {reference["source_id"] for reference in update["references"]})
+
+    def test_node_classifies_stance_from_content_not_search_intent(self) -> None:
+        update = domain_node(
+            self.state,
+            search_fn=content_mismatch_search,
+            client=ContentStanceDomainClient(),
+        )
+
+        for result in update["domain_result"].values():
+            selected = [*result["cost"], *result["throughput"], *result["model_quality"]]
+            self.assertEqual(
+                [(item["claim"], item["source_id"], item["stance"]) for item in selected],
+                [
+                    ("The technique reduces serving memory use.", "web:support", "positive"),
+                    ("The technique adds deployment complexity.", "web:limit", "negative"),
+                    ("The vendor published implementation details.", "web:neutral", "neutral"),
+                ],
+            )
+        self.assertEqual(
+            {reference["source_id"]: reference["stance"] for reference in update["references"]},
+            {"web:support": "positive", "web:limit": "negative", "web:neutral": "neutral"},
+        )
 
 
 if __name__ == "__main__":

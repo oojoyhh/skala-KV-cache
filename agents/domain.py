@@ -47,7 +47,12 @@ class StructuredOutputClient(Protocol):
         """Return structured output conforming to ``response_model``."""
 
 
-def build_domain_prompt(domain: str, evidence: Sequence[Evidence]) -> str:
+def build_domain_prompt(
+    domain: str,
+    evidence: Sequence[Evidence],
+    *,
+    classify_stance: bool = False,
+) -> str:
     """Build an evidence-only classification prompt for the supplied domain."""
 
     from llm import load_prompt
@@ -56,7 +61,17 @@ def build_domain_prompt(domain: str, evidence: Sequence[Evidence]) -> str:
         f"- claim: {item['claim']} | source_id: {item['source_id']} | stance: {item['stance']}"
         for item in evidence
     ) or "(No Evidence was provided.)"
-    return load_prompt("domain").format(domain=domain, evidence=evidence_text)
+    stance_instruction = (
+        "- 각 claim 본문만 근거로 positive, negative, neutral 중 stance를 분류한다. "
+        "검색 의도는 stance 근거가 아니며, 입력의 stance 값은 미분류 placeholder다.\n"
+        if classify_stance
+        else "- 제공된 Evidence의 stance를 변경하지 않는다.\n"
+    )
+    return load_prompt("domain").format(
+        domain=domain,
+        evidence=evidence_text,
+        stance_instruction=stance_instruction,
+    )
 
 
 def _build_domain_summary(axes: dict[str, list[Evidence]]) -> str:
@@ -76,6 +91,8 @@ def validate_domain_result(
     domain: str,
     result: DomainStructuredResponse,
     evidence: Sequence[Evidence],
+    *,
+    classify_stance: bool = False,
 ) -> DomainResult:
     """Return the exact DomainResult contract after validating Evidence reuse."""
 
@@ -83,6 +100,7 @@ def validate_domain_result(
         (item["claim"], item["source_id"], item["stance"])
         for item in evidence
     }
+    input_claim_sources = {(item["claim"], item["source_id"]) for item in evidence}
     input_source_ids = {item["source_id"] for item in evidence}
     axes = (
         "cost",
@@ -92,6 +110,7 @@ def validate_domain_result(
         "deployment_barrier",
     )
     validated_axes: dict[str, list[Evidence]] = {}
+    classified_stances: dict[tuple[str, str], Stance] = {}
 
     for axis in axes:
         validated: list[Evidence] = []
@@ -101,10 +120,17 @@ def validate_domain_result(
                 raise DomainValidationError(
                     f"{axis} references an unknown source_id: {selected.source_id}"
                 )
-            if selected_tuple not in input_items:
+            claim_source = (selected.claim, selected.source_id)
+            if (claim_source not in input_claim_sources if classify_stance else selected_tuple not in input_items):
                 raise DomainValidationError(
                     f"{axis} contains Evidence not present in the input: {selected.source_id}"
                 )
+            previous_stance = classified_stances.get(claim_source)
+            if previous_stance is not None and previous_stance != selected.stance:
+                raise DomainValidationError(
+                    f"{axis} assigns conflicting stances to {selected.source_id}"
+                )
+            classified_stances[claim_source] = selected.stance
             validated.append(
                 {
                     "claim": selected.claim,
@@ -129,14 +155,16 @@ def evaluate_domain(
     domain: str,
     evidence: Sequence[Evidence],
     structured_output_client: StructuredOutputClient,
+    *,
+    classify_stance: bool = False,
 ) -> DomainResult:
     """Classify supplied Evidence and return the design-specified DomainResult."""
 
     if not domain.strip():
         raise ValueError("domain must not be blank.")
-    prompt = build_domain_prompt(domain, evidence)
+    prompt = build_domain_prompt(domain, evidence, classify_stance=classify_stance)
     response = structured_output_client.invoke(prompt, DomainStructuredResponse)
-    return validate_domain_result(domain, response, evidence)
+    return validate_domain_result(domain, response, evidence, classify_stance=classify_stance)
 
 
 def _empty_result(domain: str, error: str) -> DomainResult:
@@ -237,13 +265,14 @@ def domain_node(
                 ):
                     reference = _record_to_reference(record)
                     references_by_id[reference["source_id"]] = reference
-                    candidates.append(
-                        {
-                            "claim": record["content"],
-                            "source_id": reference["source_id"],
-                            "stance": stance,
-                        }
-                    )
+                    candidate = {
+                        "claim": record["content"],
+                        "source_id": reference["source_id"],
+                        # Retrieval intent must not pre-classify Evidence stance.
+                        "stance": "neutral",
+                    }
+                    if candidate not in candidates:
+                        candidates.append(candidate)
         except Exception as exc:  # noqa: BLE001 - external search failure must not stop the graph
             results[technology] = _empty_result(state["domain"], f"[E-1002] 검색 실패: {exc}")
             continue
@@ -253,7 +282,7 @@ def domain_node(
             continue
 
         try:
-            result = evaluate_domain(state["domain"], candidates, client)
+            result = evaluate_domain(state["domain"], candidates, client, classify_stance=True)
         except Exception as exc:  # noqa: BLE001 - structured LLM/validation failure is E-1002
             results[technology] = _empty_result(state["domain"], f"[E-1002] 도메인 분류 실패: {exc}")
             continue
@@ -264,6 +293,15 @@ def domain_node(
             for axis in ("cost", "throughput", "model_quality", "transfer_overhead", "deployment_barrier")
             for evidence in result[axis]
         }
-        references.extend(reference for source_id, reference in references_by_id.items() if source_id in used_ids)
+        used_stances = {
+            evidence["source_id"]: evidence["stance"]
+            for axis in ("cost", "throughput", "model_quality", "transfer_overhead", "deployment_barrier")
+            for evidence in result[axis]
+        }
+        references.extend(
+            {**reference, "stance": used_stances[source_id]}
+            for source_id, reference in references_by_id.items()
+            if source_id in used_ids
+        )
 
     return {"domain_result": results, "references": references}

@@ -2,7 +2,8 @@
 
 반드시 cost, throughput, model_quality, transfer_overhead, deployment_barrier 다섯 목록을 반환한다.
 
-- 제공된 Evidence의 claim, source_id, stance를 변경하거나 새로 만들지 않는다.
+{stance_instruction}
+- claim과 source_id를 변경하거나 새로 만들지 않는다.
 - Evidence가 직접 뒷받침하는 축에만 그대로 선택한다.
 - 근거가 없는 축은 빈 리스트로 둔다. 모든 축을 채울 필요는 없다.
 - 같은 Evidence는 실제로 여러 축을 뒷받침할 때만 변경 없이 재사용할 수 있다.

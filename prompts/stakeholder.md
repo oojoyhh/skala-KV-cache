@@ -2,7 +2,8 @@
 
 반드시 competitors, adopters_devs, investors 세 목록을 반환한다.
 
-- Evidence의 claim, source_id, stance를 변경하거나 새로 만들지 않는다.
+{stance_instruction}
+- claim과 source_id를 변경하거나 새로 만들지 않는다.
 - 각 목록에는 제공된 Evidence 항목만 그대로 선택한다.
 - 관련 Evidence가 없으면 해당 목록은 빈 리스트로 둔다.
 - positive, negative, neutral 이외의 stance를 사용하지 않는다.

@@ -49,7 +49,12 @@ class StructuredOutputClient(Protocol):
         """Return structured output matching ``response_model``."""
 
 
-def build_stakeholder_prompt(technology: str, evidence: Sequence[Evidence]) -> str:
+def build_stakeholder_prompt(
+    technology: str,
+    evidence: Sequence[Evidence],
+    *,
+    classify_stance: bool = False,
+) -> str:
     """Build a prompt that permits classification, not invention, of Evidence."""
 
     from llm import load_prompt
@@ -58,7 +63,17 @@ def build_stakeholder_prompt(technology: str, evidence: Sequence[Evidence]) -> s
         f"- claim: {item['claim']} | source_id: {item['source_id']} | stance: {item['stance']}"
         for item in evidence
     ) or "(No Evidence was provided.)"
-    return load_prompt("stakeholder").format(technology=technology, evidence=evidence_text)
+    stance_instruction = (
+        "- 각 claim 본문만 근거로 positive, negative, neutral 중 stance를 분류한다. "
+        "검색 의도는 stance 근거가 아니며, 입력의 stance 값은 미분류 placeholder다.\n"
+        if classify_stance
+        else "- Evidence의 claim, source_id, stance를 변경하지 않는다.\n"
+    )
+    return load_prompt("stakeholder").format(
+        technology=technology,
+        evidence=evidence_text,
+        stance_instruction=stance_instruction,
+    )
 
 
 def _build_stakeholder_summary(groups: dict[str, list[Evidence]]) -> str:
@@ -77,6 +92,8 @@ def _build_stakeholder_summary(groups: dict[str, list[Evidence]]) -> str:
 def validate_stakeholder_result(
     result: StakeholderStructuredResponse,
     evidence: Sequence[Evidence],
+    *,
+    classify_stance: bool = False,
 ) -> StakeholderResult:
     """Ensure every returned Evidence item exactly matches an input item.
 
@@ -88,23 +105,32 @@ def validate_stakeholder_result(
         (item["claim"], item["source_id"], item["stance"])
         for item in evidence
     }
+    input_claim_sources = {(item["claim"], item["source_id"]) for item in evidence}
     input_source_ids = {item["source_id"] for item in evidence}
 
     validated_groups: dict[str, list[Evidence]] = {}
+    classified_stances: dict[tuple[str, str], Stance] = {}
     for group_name in ("competitors", "adopters_devs", "investors"):
         selected_items = getattr(result, group_name)
         group: list[Evidence] = []
         for selected in selected_items:
             selected_tuple = (selected.claim, selected.source_id, selected.stance)
+            claim_source = (selected.claim, selected.source_id)
             if selected.source_id not in input_source_ids:
                 raise StakeholderValidationError(
                     f"{group_name} references an unknown source_id: {selected.source_id}"
                 )
-            if selected_tuple not in input_items:
+            if (claim_source not in input_claim_sources if classify_stance else selected_tuple not in input_items):
                 raise StakeholderValidationError(
                     f"{group_name} contains Evidence not present in the input: "
                     f"{selected.source_id}"
                 )
+            previous_stance = classified_stances.get(claim_source)
+            if previous_stance is not None and previous_stance != selected.stance:
+                raise StakeholderValidationError(
+                    f"{group_name} assigns conflicting stances to {selected.source_id}"
+                )
+            classified_stances[claim_source] = selected.stance
             group.append(
                 {
                     "claim": selected.claim,
@@ -126,14 +152,16 @@ def evaluate_stakeholders(
     technology: str,
     evidence: Sequence[Evidence],
     structured_output_client: StructuredOutputClient,
+    *,
+    classify_stance: bool = False,
 ) -> StakeholderResult:
     """Classify Evidence with an LLM, then preserve only valid selections."""
 
     if not technology.strip():
         raise ValueError("technology must not be blank.")
-    prompt = build_stakeholder_prompt(technology, evidence)
+    prompt = build_stakeholder_prompt(technology, evidence, classify_stance=classify_stance)
     response = structured_output_client.invoke(prompt, StakeholderStructuredResponse)
-    return validate_stakeholder_result(response, evidence)
+    return validate_stakeholder_result(response, evidence, classify_stance=classify_stance)
 
 
 def _empty_result(error: str) -> StakeholderResult:
@@ -227,13 +255,14 @@ def stakeholder_node(
                 ):
                     reference = _record_to_reference(record)
                     references_by_id[reference["source_id"]] = reference
-                    candidates.append(
-                        {
-                            "claim": record["content"],
-                            "source_id": reference["source_id"],
-                            "stance": stance,
-                        }
-                    )
+                    candidate = {
+                        "claim": record["content"],
+                        "source_id": reference["source_id"],
+                        # Retrieval intent must not pre-classify Evidence stance.
+                        "stance": "neutral",
+                    }
+                    if candidate not in candidates:
+                        candidates.append(candidate)
         except Exception as exc:  # noqa: BLE001 - external search failure must not stop the graph
             results[technology] = _empty_result(f"[E-1002] 검색 실패: {exc}")
             continue
@@ -243,7 +272,7 @@ def stakeholder_node(
             continue
 
         try:
-            result = evaluate_stakeholders(technology, candidates, client)
+            result = evaluate_stakeholders(technology, candidates, client, classify_stance=True)
         except Exception as exc:  # noqa: BLE001 - structured LLM/validation failure is E-1002
             results[technology] = _empty_result(f"[E-1002] 이해관계자 분류 실패: {exc}")
             continue
@@ -254,6 +283,15 @@ def stakeholder_node(
             for group in ("competitors", "adopters_devs", "investors")
             for evidence in result[group]
         }
-        references.extend(reference for source_id, reference in references_by_id.items() if source_id in used_ids)
+        used_stances = {
+            evidence["source_id"]: evidence["stance"]
+            for group in ("competitors", "adopters_devs", "investors")
+            for evidence in result[group]
+        }
+        references.extend(
+            {**reference, "stance": used_stances[source_id]}
+            for source_id, reference in references_by_id.items()
+            if source_id in used_ids
+        )
 
     return {"stakeholder_result": results, "references": references}

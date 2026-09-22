@@ -13,6 +13,15 @@ class SufficiencyValidationError(ValueError):
     """Raised when a SufficiencyCheck does not match the State contract."""
 
 
+def _unique_evidence(evidence: Sequence[Evidence]) -> list[Evidence]:
+    """Keep one occurrence of each source-backed claim across result fields."""
+
+    unique: dict[tuple[str, str], Evidence] = {}
+    for item in evidence:
+        unique.setdefault((item["source_id"], item["claim"]), item)
+    return list(unique.values())
+
+
 def validate_sufficiency_check(check: Mapping[str, object]) -> SufficiencyCheck:
     """Validate the fixed output shape and its bool/reason consistency."""
 
@@ -79,7 +88,8 @@ def evaluate_sufficiency(state: State) -> SufficiencyCheck:
     for perspective in PERSPECTIVES:
         insufficient: list[str] = []
         for tech in TECHS:
-            ok, reason = _evidence_status(perspective_evidence(state, perspective, tech), perspective)
+            evidence = _unique_evidence(perspective_evidence(state, perspective, tech))
+            ok, reason = _evidence_status(evidence, perspective)
             if not ok:
                 insufficient.append(f"{tech}: {reason}")
         values[perspective] = not insufficient

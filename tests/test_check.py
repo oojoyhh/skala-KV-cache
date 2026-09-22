@@ -158,6 +158,61 @@ class CheckNodeTests(unittest.TestCase):
         result["transfer_overhead"], result["deployment_barrier"] = [], []
         self.assertTrue(check_node(state)["sufficiency"]["domain"])
 
+    def test_duplicate_domain_evidence_across_axes_is_not_counted_twice(self) -> None:
+        state = self.state(True)
+        evidence = general_evidence(2)
+        result = state["domain_result"]["TurboQuant"]
+        result["cost"], result["deployment_barrier"] = evidence, evidence
+        result["throughput"], result["model_quality"], result["transfer_overhead"] = [], [], []
+
+        check = check_node(state)["sufficiency"]
+
+        self.assertFalse(check["domain"])
+        self.assertIn("Evidence 2개", check["reasons"]["domain"])
+
+    def test_four_unique_domain_evidence_remains_sufficient_when_reused(self) -> None:
+        state = self.state(True)
+        evidence = general_evidence()
+        result = state["domain_result"]["TurboQuant"]
+        result["cost"], result["deployment_barrier"] = evidence, evidence
+        result["throughput"], result["model_quality"], result["transfer_overhead"] = [], [], []
+
+        self.assertTrue(check_node(state)["sufficiency"]["domain"])
+
+    def test_duplicate_stakeholder_evidence_across_groups_is_not_counted_twice(self) -> None:
+        state = self.state(True)
+        evidence = general_evidence(2)
+        result = state["stakeholder_result"]["TurboQuant"]
+        result["competitors"], result["adopters_devs"], result["investors"] = evidence, evidence, []
+
+        self.assertFalse(check_node(state)["sufficiency"]["stakeholder"])
+
+    def test_same_source_with_different_claims_counts_as_distinct_evidence(self) -> None:
+        state = self.state(True)
+        evidence = general_evidence(source_ids=["web:a", "web:a", "web:b", "web:b"])
+        set_perspective_evidence(state, "domain", "TurboQuant", evidence)
+
+        self.assertTrue(check_node(state)["sufficiency"]["domain"])
+
+    def test_duplicate_claim_with_same_source_counts_once_even_when_stance_differs(self) -> None:
+        state = self.state(True)
+        duplicate = {"claim": "same claim", "source_id": "web:one", "stance": "positive"}
+        conflicting_duplicate = {**duplicate, "stance": "negative"}
+        result = state["domain_result"]["TurboQuant"]
+        result["cost"], result["throughput"] = [duplicate], [conflicting_duplicate]
+        result["model_quality"], result["transfer_overhead"], result["deployment_barrier"] = [], [], []
+
+        self.assertIn("Evidence 1개", check_node(state)["sufficiency"]["reasons"]["domain"])
+
+    def test_source_cap_uses_deduplicated_domain_evidence(self) -> None:
+        state = self.state(True)
+        evidence = general_evidence(source_ids=["web:a", "web:a", "web:b", "web:b"])
+        result = state["domain_result"]["TurboQuant"]
+        result["cost"], result["deployment_barrier"] = evidence, evidence[:2]
+        result["throughput"], result["model_quality"], result["transfer_overhead"] = [], [], []
+
+        self.assertTrue(check_node(state)["sufficiency"]["domain"])
+
     def test_one_technology_insufficient_makes_perspective_false(self) -> None:
         state = self.state(True)
         set_perspective_evidence(state, "stakeholder", "InfiniGen", general_evidence(config.MIN_EVIDENCE - 1))

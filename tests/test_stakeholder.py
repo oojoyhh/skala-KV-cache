@@ -50,6 +50,38 @@ class FailingStructuredClient:
         raise RuntimeError("LLM unavailable")
 
 
+class ContentStanceStakeholderClient:
+    """Returns stance classifications based on the fixed candidate content."""
+
+    def invoke(self, prompt: str, response_model: type[StakeholderStructuredResponse]) -> StakeholderStructuredResponse:
+        return response_model(
+            competitors=[{"claim": "The technique reduces serving memory use.", "source_id": "web:support", "stance": "positive"}],
+            adopters_devs=[{"claim": "The technique adds deployment complexity.", "source_id": "web:limit", "stance": "negative"}],
+            investors=[{"claim": "The vendor published implementation details.", "source_id": "web:neutral", "stance": "neutral"}],
+            summary="Ignored by deterministic summary generation.",
+        )
+
+
+def content_mismatch_search(query: str, stance: str, **_: object) -> list[dict]:
+    """Return content whose meaning deliberately differs from query intent."""
+
+    records = {
+        "negative": [("web:support", "The technique reduces serving memory use.")],
+        "positive": [
+            ("web:limit", "The technique adds deployment complexity."),
+            ("web:neutral", "The vendor published implementation details."),
+        ],
+    }
+    return [
+        {
+            "source_id": source_id, "kind": "web", "author": "Test Org", "date": "2026-01-01",
+            "title": content, "venue": "test", "url": f"https://example.test/{source_id}",
+            "used_by": ["stakeholder"], "stance": stance, "content": content,
+        }
+        for source_id, content in records[stance]
+    ]
+
+
 class StakeholderEvaluationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.evidence: list[Evidence] = [
@@ -129,7 +161,9 @@ class StakeholderEvaluationTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(StakeholderValidationError, "unknown source_id"):
-            evaluate_stakeholders("KV cache technique", self.evidence, FakeStructuredOutputClient(response))
+            evaluate_stakeholders(
+                "KV cache technique", self.evidence, FakeStructuredOutputClient(response), classify_stance=True
+            )
 
     def test_model_created_evidence_is_rejected(self) -> None:
         response = StakeholderStructuredResponse(
@@ -146,7 +180,9 @@ class StakeholderEvaluationTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(StakeholderValidationError, "not present in the input"):
-            evaluate_stakeholders("KV cache technique", self.evidence, FakeStructuredOutputClient(response))
+            evaluate_stakeholders(
+                "KV cache technique", self.evidence, FakeStructuredOutputClient(response), classify_stance=True
+            )
 
     def test_hallucinated_llm_summary_is_discarded(self) -> None:
         response = StakeholderStructuredResponse(
@@ -258,6 +294,28 @@ class StakeholderNodeTests(unittest.TestCase):
         update = stakeholder_node(self.state, search_fn=fake_search, client=self.client)
 
         self.assertFalse(existing_ids & {reference["source_id"] for reference in update["references"]})
+
+    def test_node_classifies_stance_from_content_not_search_intent(self) -> None:
+        update = stakeholder_node(
+            self.state,
+            search_fn=content_mismatch_search,
+            client=ContentStanceStakeholderClient(),
+        )
+
+        for result in update["stakeholder_result"].values():
+            selected = [*result["competitors"], *result["adopters_devs"], *result["investors"]]
+            self.assertEqual(
+                [(item["claim"], item["source_id"], item["stance"]) for item in selected],
+                [
+                    ("The technique reduces serving memory use.", "web:support", "positive"),
+                    ("The technique adds deployment complexity.", "web:limit", "negative"),
+                    ("The vendor published implementation details.", "web:neutral", "neutral"),
+                ],
+            )
+        self.assertEqual(
+            {reference["source_id"]: reference["stance"] for reference in update["references"]},
+            {"web:support": "positive", "web:limit": "negative", "web:neutral": "neutral"},
+        )
 
 
 if __name__ == "__main__":
