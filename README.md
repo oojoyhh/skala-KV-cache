@@ -59,16 +59,16 @@ KV cache 병목을 반대 방향에서 푸는 SW 기술(TurboQuant)과 시스템
 
 ```mermaid
 flowchart TD
-    A([START]) --> B["기술 선정 (config)<br>TurboQuant / InfiniGen"]
+    A([START]) --> B["기술 선정<br>config 값: TurboQuant / InfiniGen"]
     B --> C["🔍 기술 조사 · RAG<br>관련성 체크 → 쿼리 재작성"]
     C --> EVAL
-    subgraph EVAL["관점별 평가 · 병렬 실행"]
+    subgraph EVAL["관점별 평가 · 3개 에이전트 병렬 실행 (Fan-out)"]
         direction LR
-        M["📊 시장 + TRL"] ~~~ S["🤝 이해관계자"] ~~~ D["🏭 도메인"]
+        M["📊 시장 평가 + TRL"] ~~~ S["🤝 이해관계자 평가"] ~~~ D["🏭 도메인 평가"]
     end
     EVAL --> K{"✅ 충분성 검사"}
     K -. "부족 관점만 재조사<br>최대 2회" .-> EVAL
-    K -- "충분 또는 재조사 상한" --> Y["⚖️ 평가 종합"]
+    K -- "모두 충분 또는 재조사 상한" --> Y["⚖️ 평가 종합"]
     Y --> R["📝 보고서 생성"] --> Z([END])
 ```
 
