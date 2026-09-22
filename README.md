@@ -20,6 +20,8 @@ KV cache 병목을 반대 방향에서 푸는 SW 기술(TurboQuant)과 HW 기술
 
 ## Features
 
+**핵심 차별점**: RAG 검색 품질의 정량 평가(Hit Rate@5, MRR) · 결정적 `source_id`로 근거를 끝까지 추적 · 근거가 부족한 관점만 다시 조사하는 Agentic Loop · 지지뿐 아니라 한계·반론 근거까지 찾는 확증 편향 방지 구조
+
 - 논문 PDF 기반 기술 정보 추출 (원리·범위·핵심 수치·한계, 수치는 검색된 청크에 있는 값만)
 - 시장·이해관계자·도메인 관점 병렬 평가, TRL 9단계 기준 성숙도 추정 (공개 정보 기반 추정임을 명시)
 - **확증 편향 방지 전략**
@@ -33,8 +35,8 @@ KV cache 병목을 반대 방향에서 푸는 SW 기술(TurboQuant)과 HW 기술
 | Category | Details |
 |---|---|
 | Framework | LangGraph, LangChain, Python 3.11 |
-| LLM / Generator | `[TBD: GENERATOR_MODEL]` via OpenAI API — 요약·종합·보고서 문장 |
-| LLM / Judge | `[TBD: JUDGE_MODEL]` via OpenAI API — 관련성 체크·근거 분류 |
+| LLM / Generator | gpt-4o-mini (OpenAI, temperature 0) — 요약·종합·보고서 문장 |
+| LLM / Judge | gpt-4o-mini (OpenAI, temperature 0) — 관련성 체크·근거 분류 |
 | Retrieval | FAISS (dense, MMR λ=0.7, Top-5) — Hit Rate@5 `[TBD]`, MRR `[TBD]` (한국어 질문 12개) |
 | Embedding | BAAI/bge-m3 (오픈소스, 로컬 실행) — 한국어 질의로 영어 논문을 찾는 교차 언어 검색 |
 | Web Search | Tavily |
@@ -97,9 +99,9 @@ graph TD
 ## Usage
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env        # OPENAI_API_KEY, TAVILY_API_KEY 입력
+cp .env.example .env        # Windows: copy .env.example .env / OPENAI_API_KEY, TAVILY_API_KEY 입력
 python app.py               # → outputs/RAG-Output_판교_8반_*.pdf
 ```
 

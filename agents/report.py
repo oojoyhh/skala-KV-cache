@@ -2,7 +2,9 @@
 
 - 챕터마다 필요한 State만 LLM에 넘겨 본문을 쓰고, SUMMARY는 본문을 다 쓴 뒤 작성해 맨 앞에 둔다.
 - 인용 번호는 코드가 매긴다: references를 문서 단위 source_id(#p 제거)로 중복 제거·used_by 병합 →
-  본문 등장 순서로 번호, 논문 청크는 [n, p.쪽]. Evidence가 가리키는 출처만 REFERENCE에 싣는다.
+  본문 등장 순서로 번호, 논문 청크는 [n, p.쪽]. REFERENCE에는 에이전트가 참고한 출처(used_by 있음)를 모두 싣는다
+  (본문 인용 순서대로, 본문에 인용되지 않은 출처는 그 뒤에).
+- SUMMARY는 소개(인트로덕션)가 아니라 결론 요약이다: 배경·기술 선정 챕터는 빼고 평가 결과만 넘긴다.
 - 표(요약 매트릭스, 4-4 도메인 5개 지표)와 REFERENCE는 LLM 없이 코드로 만든다.
 - LLM 호출이 실패해도 멈추지 않는다: 해당 챕터는 근거 목록으로 대신 싣고 "[E-1002]"를 남긴다.
 """
@@ -11,6 +13,7 @@ import glob
 import json
 import os
 import re
+from email.utils import parsedate_to_datetime
 
 from fpdf import FPDF
 from fpdf.fonts import FontFace
@@ -71,12 +74,32 @@ class Citations:
         return {k: self.attach(v) for k, v in data.items()}
 
     def reference_lines(self) -> list[str]:
-        return [f"[{i}] {format_reference(self.docs[d])}" for i, d in enumerate(self.order, 1)]
+        """본문 인용 순서대로 번호를 매기고, 참고했지만 인용되지 않은 출처는 뒤에 이어 붙인다."""
+        order = self.order + [d for d in self.docs if d not in self.order]
+        return [f"[{i}] {format_reference(self.docs[d])}" for i, d in enumerate(order, 1)]
+
+
+def _date(raw: str, kind: str) -> str:
+    """날짜를 표기 형식에 맞춘다: 웹 YYYY-MM-DD, 특허 YYYY-MM, 논문 YYYY. 알 수 없으면 n.d."""
+    raw = (raw or "").strip()
+    ymd = re.search(r"\d{4}-\d{2}-\d{2}", raw)
+    ymd = ymd[0] if ymd else None
+    if not ymd:
+        try:  # Tavily 등이 주는 RFC 2822 날짜 (예: "Thu, 26 Mar 2026 10:00:00 GMT")
+            ymd = parsedate_to_datetime(raw).date().isoformat()
+        except (TypeError, ValueError):
+            pass
+    ym = ymd[:7] if ymd else (re.search(r"\d{4}-\d{2}", raw) or [None])[0]
+    year = ymd[:4] if ymd else (re.search(r"\d{4}", raw) or [None])[0]
+    value = {"web": ymd, "patent": ym}.get(kind, year)
+    return value or year or "n.d."
 
 
 def format_reference(r) -> str:
-    """노션 가이드 REFERENCE 표기 형식."""
-    a, d, t, v, u = r["author"], r["date"], r["title"], r["venue"], r.get("url", "")
+    """노션 가이드 REFERENCE 표기 형식. 작성자가 없으면 기관(사이트)명을 쓴다."""
+    v, t, u = r["venue"], r["title"], r.get("url", "")
+    a = (r.get("author") or "").strip() or v
+    d = _date(r.get("date", ""), r["kind"])
     if r["kind"] == "patent":
         return f"{a}({d}). {t}, {v}, {u}"
     if r["kind"] == "paper":
@@ -203,10 +226,14 @@ def build_blocks(state: State, generate) -> list[tuple]:
             text += "\n" + TRL_NOTE
         body.append(("p", text))
 
-    body_text = "\n\n".join(t for kind, t in body if kind in ("h2", "h3", "p"))
+    # SUMMARY 입력은 평가 결과 챕터(3장~6장)만. 배경·기술 선정을 넘기면 소개문이 되기 쉽다
+    start = body.index(("h2", "3. 기술 개요"))
+    findings = "\n\n".join(t for kind, t in body[start:] if kind in ("h2", "h3", "p"))
     summary = _write(generate, head, "SUMMARY", "400~600자 (반 페이지 이내)",
-                     "아래 본문의 핵심을 요약한다. 개요 소개가 아니라 관점별 핵심 평가와 관점 간 엇갈리는 지점을 담고, 본문의 인용 표기를 유지",
-                     {"본문": body_text})
+                     "보고서 전체의 결론 요약을 쓴다. 인트로덕션이 아니다. '본 보고서는', 배경·목적·기술 소개 문장으로 시작하지 않고 "
+                     "첫 문장부터 평가 결과를 쓴다. 관점별 핵심 평가(TRL·시장성·이해관계자·도메인)와 관점 간 평가가 엇갈리는 지점을 "
+                     "\"- \"로 시작하는 4~6개 항목으로 쓰고, 본문의 인용 표기를 유지",
+                     {"평가 결과": findings})
 
     refs = cites.reference_lines()
     blocks = [("h1", TITLE), ("h2", "SUMMARY"), ("p", summary), ("table", summary_matrix(state)),

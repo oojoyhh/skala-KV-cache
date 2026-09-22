@@ -83,3 +83,35 @@ def test_llm_failure_does_not_stop(tmp_path, monkeypatch):
     assert (tmp_path / config.REPORT_FILENAME).exists() and out["report_path"]
     md = (tmp_path / config.REPORT_FILENAME).with_suffix(".md").read_text(encoding="utf-8")
     assert "[E-1002]" in md and "- [샘플]" in md  # 근거 목록으로 대체
+
+
+def test_summary_is_not_an_introduction():
+    prompts = []
+
+    def recording_generate(prompt: str) -> str:
+        prompts.append(prompt)
+        return fake_generate(prompt)
+
+    build_blocks(sample_state_after_eval(True), recording_generate)
+    summary_prompt = next(p for p in prompts if "## 챕터: SUMMARY" in p)
+    assert "인트로덕션이 아니다" in summary_prompt
+    assert "1. 분석 배경" not in summary_prompt and "2. 기술 선정" not in summary_prompt  # 배경·선정 챕터는 넘기지 않음
+    assert "3. 기술 개요" in summary_prompt and "6. 한계점" in summary_prompt
+
+
+def test_reference_keeps_uncited_sources_and_formats():
+    refs = [
+        {"source_id": "web:a", "kind": "web", "author": "", "date": "Thu, 26 Mar 2026 10:00:00 GMT", "title": "Cited",
+         "venue": "Site A", "url": "https://a", "used_by": ["market"], "stance": "positive"},
+        {"source_id": "web:b", "kind": "web", "author": "Org B", "date": "", "title": "Consulted",
+         "venue": "Site B", "url": "https://b", "used_by": ["stakeholder"], "stance": "negative"},
+        {"source_id": "patent:c", "kind": "patent", "author": "NVIDIA", "date": "2025-03-01", "title": "KV Cache Transform Coding",
+         "venue": "US-XXXXXXX-A1", "url": "https://c", "used_by": ["market"], "stance": "neutral"},
+    ]
+    c = Citations(refs)
+    c.cite("web:a")
+    assert c.reference_lines() == [
+        "[1] Site A(2026-03-26). Cited. Site A, https://a",            # 작성자 없음 → 사이트명, RFC 날짜 → YYYY-MM-DD
+        "[2] Org B(n.d.). Consulted. Site B, https://b",               # 인용 안 됐어도 참고한 출처는 수록
+        "[3] NVIDIA(2025-03). KV Cache Transform Coding, US-XXXXXXX-A1, https://c",
+    ]
