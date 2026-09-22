@@ -8,12 +8,12 @@ import json
 from collections import Counter
 from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 import config
 import llm
-from state import (PERSPECTIVES, PERSPECTIVE_FIELDS, TECHS, Conflict, Evidence, State, Synthesis, TechName,
-                   perspective_evidence)
+from state import (PERSPECTIVES, PERSPECTIVE_FIELDS, TECHS, Conflict, Evidence, Perspective, State, Synthesis,
+                   TechName, perspective_evidence)
 
 PERSPECTIVE_NAMES = {"trl": "기술 성숙도(TRL)", "market": "시장성", "stakeholder": "이해관계자", "domain": "도메인 적용"}
 
@@ -23,23 +23,11 @@ class _Finding(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     tech: TechName
-    perspective_a: str
-    perspective_b: str
+    # Literal이라야 구조화 출력 스키마에 enum이 실려 모델이 관점 자리에 기술명 등 다른 값을 넣지 못한다.
+    perspective_a: Perspective
+    perspective_b: Perspective
     evidence_a: list[str] = Field(min_length=1)
     evidence_b: list[str] = Field(min_length=1)
-
-    @field_validator("perspective_a", "perspective_b")
-    @classmethod
-    def known_perspective(cls, value: str) -> str:
-        if value not in PERSPECTIVES:
-            raise ValueError("정의되지 않은 관점")
-        return value
-
-    @model_validator(mode="after")
-    def different_perspectives(self):
-        if self.perspective_a == self.perspective_b:
-            raise ValueError("서로 다른 관점이 필요함")
-        return self
 
 
 class _SynthesisDraft(BaseModel):
@@ -61,8 +49,8 @@ def evidence_catalog(state: State) -> dict[str, tuple[TechName, str, Evidence]]:
     catalog: dict[str, tuple[TechName, str, Evidence]] = {}
     for tech in TECHS:
         for p in PERSPECTIVES:
-            unique = {(ev["source_id"], ev["claim"], ev["stance"]): ev for ev in perspective_evidence(state, p, tech)}
-            for i, ev in enumerate(unique.values(), 1):
+            # perspective_evidence가 (source_id, claim) 기준으로 이미 중복을 제거해 돌려준다.
+            for i, ev in enumerate(perspective_evidence(state, p, tech), 1):
                 catalog[f"{_tech_code(tech)}-{p}-{i}"] = (tech, p, ev)
     return catalog
 
@@ -92,7 +80,12 @@ def _limitations(state: State) -> list[str]:
 
 
 def _resolve(finding: _Finding, catalog: dict) -> tuple[list[Evidence], list[Evidence]] | None:
-    """모든 ID가 카탈로그에 있고 finding의 기술·관점과 일치할 때만 Evidence로 되돌린다."""
+    """모든 ID가 카탈로그에 있고 finding의 기술·관점과 일치할 때만 Evidence로 되돌린다.
+
+    검증 실패는 draft 전체가 아니라 항목 단위로만 배제한다(한 항목이 틀려도 나머지는 살린다).
+    """
+    if finding.perspective_a == finding.perspective_b:
+        return None  # 관점 간 비교가 아니므로 이 항목만 버린다.
     resolved = []
     for perspective, ids in ((finding.perspective_a, finding.evidence_a), (finding.perspective_b, finding.evidence_b)):
         evs = []

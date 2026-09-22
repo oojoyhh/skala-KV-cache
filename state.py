@@ -28,7 +28,8 @@ TECH_HW: TechName = "InfiniGen"
 TECHS: tuple[TechName, ...] = (TECH_SW, TECH_HW)
 
 # 충분성 검사가 판정하는 4개 관점 (SufficiencyCheck 키, reasons 키와 동일)
-PERSPECTIVES: tuple[str, ...] = ("trl", "market", "stakeholder", "domain")
+Perspective = Literal["trl", "market", "stakeholder", "domain"]
+PERSPECTIVES: tuple[Perspective, ...] = ("trl", "market", "stakeholder", "domain")
 
 DOMAIN = "데이터센터/클라우드 서빙"
 
@@ -165,10 +166,19 @@ PERSPECTIVE_FIELDS: dict[str, tuple[str, tuple[str, ...]]] = {
 
 
 def perspective_evidence(state: State, perspective: str, tech: TechName) -> list[Evidence]:
-    """한 관점·한 기술의 Evidence를 모두 모아 반환한다. 결과가 없으면 빈 리스트."""
+    """한 관점·한 기술의 Evidence를 모두 모아 반환한다. 결과가 없으면 빈 리스트.
+
+    같은 `(source_id, claim)`이 한 관점의 여러 필드에 들어갈 수 있으므로(예: 같은 근거를
+    이해관계자 두 그룹에 배치) 여기서 한 번만 세도록 중복을 제거한다. 충분성 검사·평가 종합·
+    보고서가 모두 이 함수를 쓰므로 근거 개수가 세 곳에서 같아진다 (DEV_PLAN §3-3).
+    """
     key, fields = PERSPECTIVE_FIELDS[perspective]
     result = state.get(key, {}).get(tech, {})
-    return [ev for f in fields for ev in result.get(f, [])]
+    unique: dict[tuple[str, str], Evidence] = {}
+    for f in fields:
+        for ev in result.get(f, []):
+            unique.setdefault((ev["source_id"], ev["claim"]), ev)
+    return list(unique.values())
 
 
 def retry_hint(state: State, perspective: str) -> str:
