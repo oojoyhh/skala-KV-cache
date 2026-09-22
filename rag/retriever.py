@@ -38,7 +38,7 @@ def retrieve(query: str, k: int = config.TOP_K) -> list[dict[str, Any]]:
             search_type="mmr",
             search_kwargs={
                 "k": k,
-                "fetch_k": max(config.MMR_FETCH_K, k),
+                "fetch_k": max(config.MMR_FETCH_K, k * 2),
                 "lambda_mult": config.MMR_LAMBDA,
             },
         )
