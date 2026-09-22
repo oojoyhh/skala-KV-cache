@@ -18,7 +18,8 @@ pymupdf
 # 웹 검색 (3·4번)
 tavily-python
 
-# 보고서 PDF (6번) — 라이브러리 확정 후 추가
+# 보고서 PDF (6번)
+fpdf2
 
 # 테스트
 pytest
