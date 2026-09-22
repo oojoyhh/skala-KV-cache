@@ -2,8 +2,8 @@
 
 - 챕터마다 필요한 State만 LLM에 넘겨 본문을 쓰고, SUMMARY는 본문을 다 쓴 뒤 작성해 맨 앞에 둔다.
 - 인용 번호는 코드가 매긴다: references를 문서 단위 source_id(#p 제거)로 중복 제거·used_by 병합 →
-  본문 등장 순서로 번호, 논문 청크는 [n, p.쪽]. REFERENCE에는 에이전트가 참고한 출처(used_by 있음)를 모두 싣는다
-  (본문 인용 순서대로, 본문에 인용되지 않은 출처는 그 뒤에).
+  본문 등장 순서로 번호, 논문 청크는 [n, p.쪽]. REFERENCE에는 State의 Evidence가 가리키는 출처만 싣는다
+  (설계서 D-1 "실제 사용한 자료만". 검색만 되고 근거로 쓰이지 않은 결과는 제외). 본문 인용 순서대로, 인용되지 않은 출처는 그 뒤에.
 - SUMMARY는 소개(인트로덕션)가 아니라 결론 요약이다: 배경·기술 선정 챕터는 빼고 평가 결과만 넘긴다.
 - 표(요약 매트릭스, 4-4 도메인 5개 지표)와 REFERENCE는 LLM 없이 코드로 만든다.
 - LLM 호출이 실패해도 멈추지 않는다: 해당 챕터는 근거 목록으로 대신 싣고 "[E-1002]"를 남긴다.
@@ -13,8 +13,10 @@ import glob
 import json
 import os
 import re
+import unicodedata
 from email.utils import parsedate_to_datetime
 
+from fontTools.ttLib import TTFont
 from fpdf import FPDF
 from fpdf.fonts import FontFace
 
@@ -37,20 +39,32 @@ def _doc_id(source_id: str) -> str:
     return source_id.split("#")[0]
 
 
-class Citations:
-    """references를 문서 단위로 병합하고, 본문 등장 순서대로 인용 번호를 매긴다."""
+def evidence_source_ids(data) -> set[str]:
+    """State 안의 모든 Evidence가 가리키는 source_id."""
+    if isinstance(data, list):
+        return {s for v in data for s in evidence_source_ids(v)}
+    if isinstance(data, dict):
+        if "claim" in data and "source_id" in data:
+            return {data["source_id"]}
+        return {s for v in data.values() for s in evidence_source_ids(v)}
+    return set()
 
-    def __init__(self, references):
+
+class Citations:
+    """Evidence가 가리키는 출처만 문서 단위로 병합하고, 본문 등장 순서대로 인용 번호를 매긴다."""
+
+    def __init__(self, references, used_source_ids):
+        used_docs = {_doc_id(s) for s in used_source_ids}
         self.docs = {}
         for r in references:
-            if not r.get("used_by"):
-                continue
             d = _doc_id(r["source_id"])
+            if d not in used_docs:
+                continue
             if d in self.docs:
                 merged = self.docs[d]["used_by"]
-                merged += [u for u in r["used_by"] if u not in merged]
+                merged += [u for u in r.get("used_by", []) if u not in merged]
             else:
-                self.docs[d] = {**r, "used_by": list(r["used_by"])}
+                self.docs[d] = {**r, "used_by": list(r.get("used_by", []))}
         self.order: list[str] = []
 
     def cite(self, source_id: str) -> str | None:
@@ -115,11 +129,13 @@ def _drop_bad_citations(text: str, n_refs: int) -> str:
 # ---------------------------------------------------------------------------
 # 표 (LLM 없이 State에서 계산)
 # ---------------------------------------------------------------------------
+STANCE_NOTE = "표의 숫자: 지지 / 한계·반론 / 중립 근거 수"
+
+
 def _stance_counts(evs) -> str:
     if not evs:
         return "근거 없음"
-    c = {s: sum(e["stance"] == s for e in evs) for s in ("positive", "negative", "neutral")}
-    return f"지지 {c['positive']} · 한계·반론 {c['negative']} · 중립 {c['neutral']}"
+    return " / ".join(str(sum(e["stance"] == s for e in evs)) for s in ("positive", "negative", "neutral"))
 
 
 def summary_matrix(state: State) -> list[list[str]]:
@@ -213,17 +229,21 @@ def _write(generate, prompt_head, title, length, instruction, data) -> str:
 def build_blocks(state: State, generate) -> list[tuple]:
     """보고서를 (종류, 내용) 블록 목록으로 만든다. 종류: h1·h2·h3·p·table."""
     head = llm.load_prompt("report")
-    cites = Citations(state.get("references", []))
+    cites = Citations(state.get("references", []), evidence_source_ids(state))
     body = []
     for level, title, length, instruction, pick in CHAPTERS:
         body.append((f"h{level}", title))
         if pick is None:
             continue
         if title.startswith("4-4"):
-            body.append(("table", domain_table(state, cites)))
+            body += [("note", STANCE_NOTE), ("table", domain_table(state, cites))]
         text = _write(generate, head, title, length, instruction, cites.attach(pick(state)))
         if title.startswith("4-1") and "공개 정보 기반 추정" not in text:
             text += "\n" + TRL_NOTE
+        if title.startswith("6.") and state.get("sufficiency", {}).get("reasons"):
+            # 충분성 미달 사유는 LLM이 빠뜨려도 남도록 코드로 붙인다
+            text += "\n\n충분성 검사 미달 사유 (재조사 상한 도달 시 근거를 만들지 않고 기록):\n" + "\n".join(
+                f"- {PERSPECTIVE_NAMES.get(p, p)}: {why}" for p, why in state["sufficiency"]["reasons"].items())
         body.append(("p", text))
 
     # SUMMARY 입력은 평가 결과 챕터(3장~6장)만. 배경·기술 선정을 넘기면 소개문이 되기 쉽다
@@ -236,7 +256,7 @@ def build_blocks(state: State, generate) -> list[tuple]:
                      {"평가 결과": findings})
 
     refs = cites.reference_lines()
-    blocks = [("h1", TITLE), ("h2", "SUMMARY"), ("p", summary), ("table", summary_matrix(state)),
+    blocks = [("h1", TITLE), ("h2", "SUMMARY"), ("p", summary), ("note", STANCE_NOTE), ("table", summary_matrix(state)),
               *body, ("h2", "REFERENCE"), ("p", "\n".join(refs) or "인용된 자료 없음")]
     return [(k, _drop_bad_citations(v, len(refs)) if k == "p" else v) for k, v in blocks]
 
@@ -251,19 +271,40 @@ def _font_file() -> str:
     return found[0]
 
 
+def _printable(text: str, cmap: dict) -> str:
+    """폰트에 없는 글자가 PDF에서 조용히 사라지지 않게 바꾼다: α → alpha, ① → (1), 그 밖(이모지 등)은 제거."""
+    out = []
+    for ch in text:
+        if ord(ch) in cmap or ch == "\n":
+            out.append(ch)
+            continue
+        name = unicodedata.name(ch, "")
+        if name.startswith("GREEK"):
+            out.append(name.split()[-1].lower().replace("lamda", "lambda"))  # 유니코드 이름 표기가 LAMDA
+        elif name.startswith(("CIRCLED DIGIT", "CIRCLED NUMBER")):
+            out.append(f"({unicodedata.numeric(ch):g})")
+    return "".join(out)
+
+
 def render_pdf(blocks, path: str) -> None:
+    font = _font_file()
+    cmap = TTFont(font).getBestCmap()
     pdf = FPDF()
     pdf.set_margins(20, 20, 20)
     pdf.set_auto_page_break(True, margin=20)
-    pdf.add_font("ko", fname=_font_file())
+    pdf.add_font("ko", fname=font)
     pdf.add_page()
     sizes = {"h1": 18, "h2": 14, "h3": 12}
     for kind, content in blocks:
+        content = [[_printable(c, cmap) for c in row] for row in content] if kind == "table" else _printable(content, cmap)
         if kind in sizes:
             pdf.ln(4)
             pdf.set_font("ko", size=sizes[kind])
             pdf.multi_cell(0, 8, content, align="L", new_x="LMARGIN", new_y="NEXT")
             pdf.ln(1)
+        elif kind == "note":
+            pdf.set_font("ko", size=8)
+            pdf.multi_cell(0, 5, content, align="L", new_x="LMARGIN", new_y="NEXT")
         elif kind == "table":
             pdf.set_font("ko", size=8)
             with pdf.table(text_align="LEFT", line_height=5, headings_style=FontFace(emphasis="")) as table:
@@ -275,6 +316,7 @@ def render_pdf(blocks, path: str) -> None:
         else:
             pdf.set_font("ko", size=10)
             for line in content.replace("**", "").splitlines():
+                line = line.lstrip("#").lstrip() if line.startswith("#") else line  # LLM이 붙인 마크다운 제목 기호 제거
                 pdf.multi_cell(0, 6, line.rstrip(), align="L", new_x="LMARGIN", new_y="NEXT")
     pdf.output(path)
 

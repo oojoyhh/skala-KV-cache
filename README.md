@@ -28,7 +28,7 @@ KV cache 병목을 반대 방향에서 푸는 SW 기술(TurboQuant)과 HW 기술
   - 관점마다 지지·한계·반론 쿼리를 각각 검색
   - 충분성 검사: 관점·기술별 근거 4개 이상, 지지·한계·반론 각 1개 이상, 한 출처 비율 50% 이하 → 미달 관점만 쿼리를 바꿔 재조사 (최대 2회)
   - 끝까지 부족한 근거는 만들어내지 않고 보고서 한계점에 기록
-- 보고서 자동 생성: 목차 순서 작성, 본문 인용 번호와 REFERENCE 자동 연결(출처 중복 제거), 기술×관점 근거 분포 표
+- 보고서 자동 생성: 목차 순서 작성, 본문 인용 번호와 REFERENCE 자동 연결(근거로 쓴 출처만, 문서 단위 중복 제거), 기술×관점 근거 분포 표
 
 ## Tech Stack
 
@@ -58,7 +58,7 @@ KV cache 병목을 반대 방향에서 푸는 SW 기술(TurboQuant)과 HW 기술
 
 ```mermaid
 graph TD
-    START([START]) --> select[기술 선정<br>Human 입력]
+    START([START]) --> select[기술 선정<br>config 값: TurboQuant / InfiniGen]
     select --> research[🔍 기술 조사<br>RAG]
     research --> market[📊 시장 평가 + TRL]
     research --> stakeholder[🤝 이해관계자 평가]
