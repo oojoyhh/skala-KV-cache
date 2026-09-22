@@ -87,6 +87,24 @@ class DomainNodeTests(unittest.TestCase):
         failed = domain_node(self.state, search_fn=lambda *_a, **_k: SearchFailureResult(), client=self.client)
         self.assertTrue(all(x["summary"].startswith("[E-1001]") for x in empty["domain_result"].values()))
         self.assertTrue(all(x["summary"].startswith("[E-1002]") for x in failed["domain_result"].values()))
+    def test_partial_search_failure_recovers_with_later_results(self) -> None:
+        calls = 0
+        def partially_failed_search(query: str, stance: str, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return SearchFailureResult()
+            return fake_search(query, stance, **kwargs)
+
+        update = domain_node(self.state, search_fn=partially_failed_search, client=self.client)
+
+        self.assertGreater(calls, 1)
+        self.assertTrue(update["references"])
+        for result in update["domain_result"].values():
+            self.assertFalse(result["summary"].startswith("[E-1002]"))
+            self.assertTrue(any(result[axis] for axis in (
+                "cost", "throughput", "model_quality", "transfer_overhead", "deployment_barrier",
+            )))
     def test_content_stance_is_not_search_intent(self) -> None:
         update = domain_node(self.state, search_fn=content_mismatch_search, client=ContentClient())
         result = update["domain_result"]["TurboQuant"]

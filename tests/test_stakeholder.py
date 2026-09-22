@@ -102,6 +102,24 @@ class StakeholderNodeTests(unittest.TestCase):
         self.assertTrue(all(x["summary"].startswith("[E-1001]") for x in empty["stakeholder_result"].values()))
         self.assertTrue(all(x["summary"].startswith("[E-1002]") for x in failed["stakeholder_result"].values()))
 
+    def test_partial_search_failure_recovers_with_later_results(self) -> None:
+        calls = 0
+
+        def partially_failed_search(query: str, stance: str, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return SearchFailureResult()
+            return fake_search(query, stance, **kwargs)
+
+        update = stakeholder_node(self.state, search_fn=partially_failed_search, client=self.client)
+
+        self.assertGreater(calls, 1)
+        self.assertTrue(update["references"])
+        for result in update["stakeholder_result"].values():
+            self.assertFalse(result["summary"].startswith("[E-1002]"))
+            self.assertTrue(any(result[group] for group in ("competitors", "adopters_devs", "investors")))
+
     def test_content_stance_is_not_search_intent(self) -> None:
         update = stakeholder_node(self.state, search_fn=content_mismatch_search, client=ContentClient())
         result = update["stakeholder_result"]["TurboQuant"]
