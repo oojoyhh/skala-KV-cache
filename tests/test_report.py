@@ -210,3 +210,22 @@ def test_summary_keeps_only_bullets():
     blocks = build_blocks(sample_state_after_eval(True), gen)
     summary = blocks[blocks.index(("h2", "SUMMARY")) + 1][1]
     assert summary == "- 핵심 1\n- 핵심 2"
+
+
+def test_single_tech_sentence_keeps_only_its_own_citations():
+    refs = [
+        {"source_id": "web:t", "kind": "web", "author": "A", "date": "", "title": "TQ 자료", "venue": "a.com",
+         "url": "https://a.com/t", "used_by": ["market"], "stance": "negative"},
+        {"source_id": "web:i", "kind": "web", "author": "B", "date": "", "title": "IG 자료", "venue": "b.com",
+         "url": "https://b.com/i", "used_by": ["market"], "stance": "positive"},
+    ]
+    state = {"market_result": {"TurboQuant": {"adoption": [{"claim": "c", "source_id": "web:t", "stance": "negative"}]},
+                               "InfiniGen": {"adoption": [{"claim": "c", "source_id": "web:i", "stance": "positive"}]}}}
+    c = Citations(refs, {"web:t", "web:i"})
+    assert (c.cite("web:t"), c.cite("web:i")) == ("[1]", "[2]")
+    techs_of = report.doc_techs(state, c)
+    text = ("TurboQuant는 정밀도 손실이 지적된다 [1][2].\n"
+            "InfiniGen은 전송 부담이 보고된다 [1] [2]. 두 기술 모두 TurboQuant·InfiniGen 근거가 있다 [1][2].")
+    assert report._keep_same_tech_citations(text, c, techs_of) == (
+        "TurboQuant는 정밀도 손실이 지적된다 [1].\n"
+        "InfiniGen은 전송 부담이 보고된다 [2]. 두 기술 모두 TurboQuant·InfiniGen 근거가 있다 [1][2].")

@@ -1,6 +1,7 @@
 """📝 보고서 생성 에이전트 (6번) — State → 설계서 E 목차 순서의 평가 보고서 PDF.
 
 - 챕터마다 필요한 State만 LLM에 넘겨 본문을 쓰고, SUMMARY는 본문을 다 쓴 뒤 작성해 맨 앞에 둔다.
+- 한 기술만 다루는 문장에는 그 기술 근거의 인용만 남긴다 (다른 기술 자료 번호가 섞이지 않게).
 - 인용 번호는 코드가 매긴다: references를 문서 단위 source_id(#p 제거)로 중복 제거·used_by 병합 →
   본문 등장 순서로 번호, 논문 청크는 [n, p.쪽]. REFERENCE에는 State의 Evidence가 가리키는 출처만 싣는다
   (설계서 D-1 "실제 사용한 자료만". 검색만 되고 근거로 쓰이지 않은 결과는 제외). 본문 인용 순서대로, 인용되지 않은 출처는 그 뒤에.
@@ -189,6 +190,44 @@ def _has_claims(data) -> bool:
     return False
 
 
+def doc_techs(state: State, cites: Citations) -> dict[str, set[str]]:
+    """REFERENCE 한 줄(문서) → 그 문서를 근거로 쓴 기술들."""
+    out: dict[str, set[str]] = {}
+    for key in ("tech_summary", *RESULT_NAMES):
+        for tech, result in (state.get(key) or {}).items():
+            for sid in evidence_source_ids(result):
+                d = cites.alias.get(_doc_id(sid))
+                if d:
+                    out.setdefault(d, set()).add(tech)
+    return out
+
+
+SENTENCE = re.compile(r".+?(?:[.!?](?:\s*\[[^\]\n]*\])*(?=\s|$)|$)")
+
+
+def _keep_same_tech_citations(text: str, cites: Citations, techs_of: dict[str, set[str]]) -> str:
+    """한 기술만 다루는 문장에는 그 기술 근거의 인용만 남긴다 (예: TurboQuant 비판 문장에 붙은 InfiniGen 자료 제거)."""
+    def fix_sentence(m):
+        sent = m[0]
+        named = [t for t in TECHS if t.lower() in sent.lower()]
+        if len(named) != 1:   # 두 기술을 함께 다루거나 기술명이 없는 문장은 그대로
+            return sent
+
+        def keep(g):
+            ok = []
+            for n, p in CITE_ITEM.findall(g[1]):
+                i = int(n) - 1
+                owner = techs_of.get(cites.order[i], set()) if 0 <= i < len(cites.order) else set()
+                if not owner or named[0] in owner:
+                    ok.append(f"[{n}, p.{p}]" if p else f"[{n}]")
+            lead = g[0][: len(g[0]) - len(g[0].lstrip())]
+            return lead + " ".join(ok) if ok else ""
+
+        return CITE_GROUP.sub(keep, sent)
+
+    return "\n".join(SENTENCE.sub(fix_sentence, line) for line in text.split("\n"))
+
+
 ERROR_CODE = re.compile(r"\[E-10\d\d\]")
 RESULT_NAMES = {"tech_summary": "기술 조사", "trl_result": "TRL", "market_result": "시장성",
                 "stakeholder_result": "이해관계자", "domain_result": "도메인"}
@@ -360,6 +399,7 @@ def build_blocks(state: State, generate) -> list[tuple]:
     head = llm.load_prompt("report")
     cites = Citations(state.get("references", []), evidence_source_ids(state))
     errors = collect_errors(state)
+    techs_of = doc_techs(state, cites)
     body = []
     for level, title, length, instruction, pick in CHAPTERS:
         body.append((f"h{level}", title))
@@ -375,7 +415,7 @@ def build_blocks(state: State, generate) -> list[tuple]:
         if title.startswith(EVIDENCE_CHAPTERS) and not _has_claims(data):
             text = NO_SYNTHESIS if title.startswith("5.") else NO_EVIDENCE
         else:
-            text = _write(generate, head, title, length, instruction, data)
+            text = _keep_same_tech_citations(_write(generate, head, title, length, instruction, data), cites, techs_of)
         if title.startswith("4-1") and "공개 정보 기반 추정" not in text:
             text += "\n" + TRL_NOTE
         if title.startswith("6.") and state.get("sufficiency", {}).get("reasons"):
@@ -396,6 +436,7 @@ def build_blocks(state: State, generate) -> list[tuple]:
                      "첫 문장부터 평가 결과를 쓴다. 관점별 핵심 평가(TRL·시장성·이해관계자·도메인)와 관점 간 평가가 엇갈리는 지점을 "
                      "\"- \"로 시작하는 4~6개 항목으로 쓰고, 본문의 인용 표기를 유지",
                      {"평가 결과": findings}, allowed=_cite_marks(findings))
+    summary = _keep_same_tech_citations(summary, cites, techs_of)
     bullets = [line for line in summary.splitlines() if line.lstrip().startswith("- ")]
     summary = "\n".join(bullets) if bullets else summary
 
@@ -408,11 +449,18 @@ def build_blocks(state: State, generate) -> list[tuple]:
 # ---------------------------------------------------------------------------
 # 출력
 # ---------------------------------------------------------------------------
-def _font_file() -> str:
+def _font_file(bold: bool = False) -> str:
+    """FONT_DIR의 한글 폰트. 본문은 이름에 Bold가 없는 파일, 볼드는 *-Bold.ttf (없으면 본문 폰트)."""
     found = sorted(glob.glob(os.path.join(config.FONT_DIR, "*.ttf")))
-    if not found:
+    regular = [f for f in found if "bold" not in os.path.basename(f).lower()]
+    if not regular:
         raise FileNotFoundError(f"한글 폰트가 없습니다. {config.FONT_DIR}/ 에 .ttf 파일을 두세요.")
-    return found[0]
+    bolds = [f for f in found if os.path.basename(f).lower().endswith("-bold.ttf")]
+    return (bolds or regular)[0] if bold else regular[0]
+
+
+BOLD = FontFace(emphasis="BOLD")
+LABELS = ("충분성 검사 미달 사유", "데이터 수집 오류")   # 코드가 붙이는 6장 소제목 줄
 
 
 def _printable(text: str, cmap: dict) -> str:
@@ -437,13 +485,14 @@ def render_pdf(blocks, path: str) -> None:
     pdf.set_margins(20, 20, 20)
     pdf.set_auto_page_break(True, margin=20)
     pdf.add_font("ko", fname=font)
+    pdf.add_font("ko", style="B", fname=_font_file(bold=True))
     pdf.add_page()
     sizes = {"h1": 18, "h2": 14, "h3": 12}
     for kind, content in blocks:
         content = [[_printable(c, cmap) for c in row] for row in content] if kind == "table" else _printable(content, cmap)
         if kind in sizes:
             pdf.ln(4)
-            pdf.set_font("ko", size=sizes[kind])
+            pdf.set_font("ko", style="B", size=sizes[kind])
             pdf.multi_cell(0, 8, content, align="L", new_x="LMARGIN", new_y="NEXT")
             pdf.ln(1)
         elif kind == "note":
@@ -451,16 +500,17 @@ def render_pdf(blocks, path: str) -> None:
             pdf.multi_cell(0, 5, content, align="L", new_x="LMARGIN", new_y="NEXT")
         elif kind == "table":
             pdf.set_font("ko", size=8)
-            with pdf.table(text_align="LEFT", line_height=5, headings_style=FontFace(emphasis="")) as table:
+            with pdf.table(text_align="LEFT", line_height=5, headings_style=BOLD) as table:
                 for row in content:
                     cells = table.row()
-                    for cell in row:
-                        cells.cell(cell)
+                    for i, cell in enumerate(row):
+                        cells.cell(cell, style=BOLD if i == 0 else None)   # 머리행 + 첫 열(기술·지표명) 볼드
             pdf.ln(2)
         else:
             pdf.set_font("ko", size=10)
             for line in content.replace("**", "").splitlines():
                 line = line.lstrip("#").lstrip() if line.startswith("#") else line  # LLM이 붙인 마크다운 제목 기호 제거
+                pdf.set_font("ko", style="B" if line.startswith(LABELS) else "", size=10)
                 pdf.multi_cell(0, 6, line.rstrip(), align="L", new_x="LMARGIN", new_y="NEXT")
     pdf.output(path)
 
