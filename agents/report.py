@@ -228,6 +228,22 @@ def _keep_same_tech_citations(text: str, cites: Citations, techs_of: dict[str, s
     return "\n".join(SENTENCE.sub(fix_sentence, line) for line in text.split("\n"))
 
 
+RECOMMEND = re.compile(r"(더|가장)\s*(적합|유리|나은|우수|효과적|바람직)|나은 선택|추천|권장|선택하는 것이")
+
+
+def _drop_recommendations(text: str) -> str:
+    """조건별 기술 추천·우열 문장을 지운다 (과제 원칙: 추천·우열 판정 금지)."""
+    lines = []
+    for line in text.split("\n"):
+        kept = "".join(m[0] for m in SENTENCE.finditer(line) if not RECOMMEND.search(m[0])).strip()
+        bullet = line.lstrip().startswith("- ")
+        if kept and not (bullet and kept == "-"):
+            lines.append(("- " + kept.lstrip("- ").lstrip()) if bullet and not kept.startswith("-") else kept)
+        elif not line.strip():
+            lines.append("")
+    return "\n".join(lines)
+
+
 ERROR_CODE = re.compile(r"\[E-10\d\d\]")
 RESULT_NAMES = {"tech_summary": "기술 조사", "trl_result": "TRL", "market_result": "시장성",
                 "stakeholder_result": "이해관계자", "domain_result": "도메인"}
@@ -304,6 +320,37 @@ def _by_tech(state, key, drop=()):
     return {t: {k: v for k, v in state.get(key, {}).get(t, {}).items() if k not in drop} for t in TECHS}
 
 
+def _trl_view(s) -> dict:
+    """TRL 근거가 판정 규칙(서로 다른 출처 config.MIN_TRL_EVIDENCE개)에 못 미치면 숫자 단계를 넘기지 않는다.
+    출처가 부족하다는 것은 '판정 근거 부족'이지 'TRL 1'이라는 증거가 아니기 때문."""
+    out = {}
+    for tech, r in _by_tech(s, "trl_result").items():
+        n = len({e["source_id"] for e in r.get("evidence", [])})
+        r = dict(r)
+        if n < config.MIN_TRL_EVIDENCE:
+            r["level"] = f"확정 곤란 (서로 다른 출처 {n}건 < {config.MIN_TRL_EVIDENCE}건)"
+            r.pop("rationale", None)   # "TRL 1로 보수적 추정" 같은 문장이 숫자를 되살리지 않게
+        out[tech] = r
+    return out
+
+
+def trl_line(s) -> str:
+    """4-1 첫 줄: 기술별 판정 결과를 코드로 고정 (본문·요약 표와 같은 값)."""
+    parts = []
+    for tech, r in _trl_view(s).items():
+        level = r.get("level")
+        parts.append(f"{tech} {'TRL ' + str(level) if isinstance(level, int) else (level or '판정 없음')}")
+    return "판정 결과: " + " / ".join(parts)
+
+
+def _domain_view(s) -> dict:
+    """4-4 입력: 도메인 결과 + 표와 같은 지표별 근거 수 (표·본문 불일치 방지)."""
+    data = {"domain_result": _by_tech(s, "domain_result")}
+    data["지표별 근거 수"] = {tech: {name: len(r.get(key, [])) for key, name in DOMAIN_METRICS.items()}
+                          for tech, r in data["domain_result"].items()}
+    return data
+
+
 # (제목 수준, 제목, 분량, 지시, State → 입력). pick이 None이면 제목만 쓴다.
 CHAPTERS = [
     (2, "1. 분석 배경", "400~500자",
@@ -314,31 +361,35 @@ CHAPTERS = [
      lambda s: {"tech_sw": s.get("tech_sw"), "tech_hw": s.get("tech_hw"),
                 "tech_summary": _by_tech(s, "tech_summary", drop=("evidence",))}),
     (2, "3. 기술 개요", "1,600~2,000자",
-     "기술별로 접근 방식, 적용 범위, 핵심 수치(비교 기준 포함), 한계를 나눠 서술",
+     "기술별로 접근 방식, 적용 범위, 핵심 수치(비교 기준·실험 조건 포함), 한계를 나눠 서술. key_metrics 수치는 입력에 적힌 뜻 그대로만 쓰고 "
+     "의미를 추측해 붙이지 않는다. 수치에는 그 수치가 들어 있는 evidence claim의 cite만 붙이고, 그런 claim이 없으면 인용 없이 쓴다",
      lambda s: {"tech_summary": _by_tech(s, "tech_summary")}),
     (2, "4. 관점별 평가", None, None, None),
     (3, "4-1. 기술 성숙도 (TRL)", "800~1,000자",
-     "기술별 추정 TRL 단계와 판정 근거, 더 높은 단계로 보기 어려운 이유를 서술",
-     lambda s: {"trl_result": _by_tech(s, "trl_result")}),
+     "기술별 TRL 판정과 근거를 서술. level이 '확정 곤란'이면 숫자 단계를 쓰지 말고 '공개 자료만으로 단계 확정 곤란'으로 쓰며, "
+     "그보다 높은 단계의 신호가 있으면 신호로만 소개한다. 성숙도 판단과 출처 신뢰도(출처 수)를 구분해 쓴다",
+     lambda s: {"trl_result": _trl_view(s)}),
     (3, "4-2. 시장성", "800~1,000자",
-     "시장 규모·성장성, 상용화·채택 현황, 생태계 지지를 구분해 서술. 관련 시장의 성장과 해당 기술의 채택을 구분",
+     "기술별로 시장 규모·성장성(market_size_growth), 상용화·채택 사례(adoption), 생태계 지지(ecosystem)를 이 순서로 나눠 서술. "
+     "항목에 근거가 없으면 그 항목은 '공개 근거 미확인'이라고 쓴다. 성능·비용 절감 수치는 채택 사례가 아니다. 관련 시장의 성장과 해당 기술의 채택을 구분",
      lambda s: {"market_result": _by_tech(s, "market_result")}),
     (3, "4-3. 이해관계자", "800~1,000자",
-     "경쟁 기술 진영, 도입 기업·개발자, 투자 업계별 반응을 지지·한계·반론 모두 서술",
+     "경쟁 기술 진영, 도입 기업·개발자, 투자 업계별로 서술. 해당 주체의 발언·도입·투자 사실이 담긴 근거만 '반응'이라고 쓰고, "
+     "성능 비교 자료나 논문 소개 페이지는 '반응'이 아니라 배경 자료로 표현한다. 집단별 근거가 없으면 '공개 근거 미확인'",
      lambda s: {"stakeholder_result": _by_tech(s, "stakeholder_result")}),
     (3, "4-4. 도메인 적용", "600~800자",
      "위 표의 5개 지표(비용, 처리량, 모델 품질, 전송 오버헤드, 도입 난이도)를 기준으로 데이터센터/클라우드 서빙에서의 평가를 서술. "
-     "근거가 없는 지표는 해당 없음으로 둔다",
-     lambda s: {"domain_result": _by_tech(s, "domain_result")}),
+     "'지표별 근거 수'가 1 이상인 지표는 반드시 그 근거로 서술하고, 0인 지표만 해당 없음으로 쓴다 (표와 일치해야 함)",
+     _domain_view),
     (2, "5. 시사점", "900~1,000자",
-     "관점에 따라 평가가 엇갈리는 지점(conflicts)을 중심으로, 관점 간 일치 지점(agreements)과 함께 서술",
+     "관점에 따라 평가가 엇갈리는 지점(conflicts)을 중심으로, 관점 간 일치 지점(agreements)과 함께 서술. "
+     "사용 조건별로 어느 기술이 적합한지 제안하지 않는다('~에는 A가 적합', '~에는 B가 나은 선택' 금지)",
      lambda s: {k: s.get("synthesis", {}).get(k, []) for k in ("agreements", "conflicts")}),
     (2, "6. 한계점", "400~500자",
-     "공개 정보 기반 추정의 한계, 확증편향을 막기 위해 취한 조치(지지·한계·반론 쿼리 병행, 충분성 검사와 재조사), "
-     "재조사 후에도 근거가 부족했던 관점을 서술",
-     lambda s: {"limitations": s.get("synthesis", {}).get("limitations", []),
+     "공개 정보 기반 추정의 한계와 확증편향을 막기 위해 취한 조치(지지·한계·반론 쿼리 병행, 충분성 검사와 재조사)를 방법론 차원에서 서술. "
+     "관점·기술별 근거 개수나 부족 현황은 바로 아래에 코드가 목록으로 붙이므로 다시 쓰지 않는다",
+     lambda s: {"limitations": [x for x in s.get("synthesis", {}).get("limitations", []) if "근거" not in x or "미확인" not in x],
                 "neutrality_note": s.get("synthesis", {}).get("neutrality_note", ""),
-                "sufficiency_reasons": s.get("sufficiency", {}).get("reasons", {}),
                 "retry_count": s.get("retry_count", 0)}),
 ]
 
@@ -415,7 +466,10 @@ def build_blocks(state: State, generate) -> list[tuple]:
         if title.startswith(EVIDENCE_CHAPTERS) and not _has_claims(data):
             text = NO_SYNTHESIS if title.startswith("5.") else NO_EVIDENCE
         else:
-            text = _keep_same_tech_citations(_write(generate, head, title, length, instruction, data), cites, techs_of)
+            text = _drop_recommendations(
+                _keep_same_tech_citations(_write(generate, head, title, length, instruction, data), cites, techs_of))
+        if title.startswith("4-1"):
+            body.append(("fixed", trl_line(state)))
         if title.startswith("4-1") and "공개 정보 기반 추정" not in text:
             text += "\n" + TRL_NOTE
         if title.startswith("6.") and state.get("sufficiency", {}).get("reasons"):
@@ -434,10 +488,10 @@ def build_blocks(state: State, generate) -> list[tuple]:
     summary = _write(generate, head, "SUMMARY", "400~600자 (반 페이지 이내)",
                      "보고서 전체의 결론 요약을 쓴다. 인트로덕션이 아니다. '본 보고서는', 배경·목적·기술 소개 문장으로 시작하지 않고 "
                      "첫 문장부터 평가 결과를 쓴다. 관점별 핵심 평가(TRL·시장성·이해관계자·도메인)와 관점 간 평가가 엇갈리는 지점을 "
-                     "\"- \"로 시작하는 4~6개 항목으로 쓰고, 본문의 인용 표기를 유지",
+                     "\"- \"로 시작하는 4~5개 항목(항목당 2문장 이내)으로 쓰고, 본문의 인용 표기를 유지. 조건별 기술 추천은 쓰지 않는다",
                      {"평가 결과": findings}, allowed=_cite_marks(findings))
-    summary = _keep_same_tech_citations(summary, cites, techs_of)
-    bullets = [line for line in summary.splitlines() if line.lstrip().startswith("- ")]
+    summary = _drop_recommendations(_keep_same_tech_citations(summary, cites, techs_of))
+    bullets = [line for line in summary.splitlines() if line.lstrip().startswith("- ")][:5]   # 반 페이지 이내
     summary = "\n".join(bullets) if bullets else summary
 
     refs = cites.reference_lines()
@@ -460,7 +514,7 @@ def _font_file(bold: bool = False) -> str:
 
 
 BOLD = FontFace(emphasis="BOLD")
-LABELS = ("충분성 검사 미달 사유", "데이터 수집 오류")   # 코드가 붙이는 6장 소제목 줄
+LABELS = ("충분성 검사 미달 사유", "데이터 수집 오류", "판정 결과")   # 코드가 붙이는 6장 소제목 줄
 
 
 def _printable(text: str, cmap: dict) -> str:

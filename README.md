@@ -29,6 +29,7 @@ KV cache 병목을 반대 방향에서 푸는 SW 기술(TurboQuant)과 HW 기술
   - 충분성 검사: 관점·기술별 근거 4개 이상, 지지·한계·반론 각 1개 이상, 한 출처 비율 50% 이하 → 미달 관점만 쿼리를 바꿔 재조사 (최대 2회)
   - 끝까지 부족한 근거는 만들어내지 않고 보고서 한계점에 기록
 - 보고서 자동 생성: 목차 순서 작성, 본문 인용 번호와 REFERENCE 자동 연결(근거로 쓴 출처만, 문서 단위 중복 제거), 기술×관점 근거 분포 표
+- **보고서 환각 방지**: 챕터 입력에 없던 인용 번호·쪽수는 삭제, 한 기술을 다루는 문장에는 그 기술 근거의 인용만 허용, 근거가 없는 관점은 LLM이 추측으로 채우지 않고 "공개 근거 미확인"으로 표기, 수집 오류는 기술의 한계와 분리해 한계점에 기록
 
 ## Tech Stack
 
@@ -40,7 +41,7 @@ KV cache 병목을 반대 방향에서 푸는 SW 기술(TurboQuant)과 HW 기술
 | Retrieval | FAISS (dense, MMR λ=0.7, Top-5) — **Hit Rate@5 1.00, MRR@5 0.69** (한국어 질문 12개, 기술당 6개 / MRR: TurboQuant 0.78, InfiniGen 0.60) |
 | Embedding | BAAI/bge-m3 (오픈소스, 로컬 실행) — 한국어 질의로 영어 논문을 찾는 교차 언어 검색 |
 | Web Search | Tavily |
-| Report | fpdf2 |
+| Report | fpdf2 + 나눔고딕 (OFL) |
 
 ## Agents
 
@@ -120,8 +121,11 @@ printf '%s\n' \
 `OK`가 두 번 출력되면 완료입니다. 검증에 실패하면 해당 PDF를 사용하지 말고 다시 내려받으세요 ([TurboQuant v1](https://arxiv.org/abs/2504.19874v1), [InfiniGen v1](https://arxiv.org/abs/2406.19707v1)). PDF 없이 실행하면 기술 조사 단계에서 `[E-1003] 논문 PDF 로딩 실패`가 기록되고 기술 개요가 빈 채로 보고서가 생성됩니다.
 
 ```bash
-python app.py               # → outputs/RAG-Output_판교_8반_*.pdf
+python app.py               # → outputs/RAG-Output_판교_8반_*.pdf (약 3~4분)
 ```
+
+- 첫 실행 때 임베딩 모델 BAAI/bge-m3(약 2GB)를 Hugging Face에서 내려받습니다.
+- 셸에 `OPENAI_API_KEY`가 이미 설정되어 있으면 `.env`보다 먼저 쓰입니다. 인증 오류(401)가 나면 `unset OPENAI_API_KEY` 후 다시 실행하세요.
 
 | 명령 | 용도 |
 |---|---|

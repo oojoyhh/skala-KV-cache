@@ -167,8 +167,8 @@ def test_error_codes_are_not_described_as_tech_limitations():
     blocks = build_blocks(state, recording_generate)
     assert not any("E-1002" in p for p in prompts)                 # LLM 입력에서 제외
     assert any("실제 한계" in p for p in prompts)                  # 진짜 한계는 그대로
-    fixed = [v for k, v in blocks if k == "fixed"]                 # 6장 뒤 고정 문단
-    assert len(fixed) == 1 and "데이터 수집 오류" in fixed[0] and "- 기술 조사(TurboQuant): [E-1002]" in fixed[0]
+    fixed = [v for k, v in blocks if k == "fixed" and "데이터 수집 오류" in v]   # 6장 뒤 고정 문단
+    assert len(fixed) == 1 and "- 기술 조사(TurboQuant): [E-1002]" in fixed[0]
 
 
 def test_same_web_page_with_and_without_www_is_one_reference():
@@ -229,3 +229,30 @@ def test_single_tech_sentence_keeps_only_its_own_citations():
     assert report._keep_same_tech_citations(text, c, techs_of) == (
         "TurboQuant는 정밀도 손실이 지적된다 [1].\n"
         "InfiniGen은 전송 부담이 보고된다 [2]. 두 기술 모두 TurboQuant·InfiniGen 근거가 있다 [1][2].")
+
+
+def test_trl_without_enough_sources_is_not_a_number():
+    state = sample_state_after_eval(True)
+    state["trl_result"]["TurboQuant"]["evidence"] = state["trl_result"]["TurboQuant"]["evidence"][:1]
+    state["trl_result"]["TurboQuant"]["level"] = 1
+    state["trl_result"]["TurboQuant"]["rationale"] = "TRL 1로 보수적으로 추정했다."
+    prompts = []
+    blocks = build_blocks(state, lambda p: prompts.append(p) or "본문")
+    trl_prompt = next(p for p in prompts if "## 챕터: 4-1" in p)
+    assert "확정 곤란" in trl_prompt and "TRL 1로 보수적" not in trl_prompt
+    assert ("fixed", "판정 결과: TurboQuant 확정 곤란 (서로 다른 출처 1건 < 2건) / InfiniGen TRL 4") in blocks
+
+
+def test_recommendation_sentences_are_removed():
+    text = ("TurboQuant는 정밀도 손실이 지적된다 [1]. 메모리 최소화에는 TurboQuant가 더 적합하다 [1].\n"
+            "- 대규모 처리에는 InfiniGen이 더 나은 선택이다.\n- InfiniGen은 전송 부담이 보고된다 [2].")
+    assert report._drop_recommendations(text) == "TurboQuant는 정밀도 손실이 지적된다 [1].\n- InfiniGen은 전송 부담이 보고된다 [2]."
+
+
+def test_domain_chapter_gets_same_counts_as_table_and_limits_skip_counts():
+    prompts = []
+    build_blocks(sample_state_after_eval(False), lambda p: prompts.append(p) or "본문")
+    domain_prompt = next(p for p in prompts if "## 챕터: 4-4" in p)
+    assert '"지표별 근거 수"' in domain_prompt and '"전송 오버헤드": 1' in domain_prompt
+    limits_prompt = next(p for p in prompts if "## 챕터: 6." in p)
+    assert "sufficiency_reasons" not in limits_prompt   # 부족 현황은 코드가 붙이는 목록으로만
