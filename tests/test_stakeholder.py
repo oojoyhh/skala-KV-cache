@@ -84,6 +84,14 @@ class StakeholderNodeTests(unittest.TestCase):
         self.assertEqual(set(update["stakeholder_result"]), {"TurboQuant", "InfiniGen"})
         self.assertTrue(update["references"])
 
+    def test_existing_state_references_are_not_copied(self) -> None:
+        existing_ids = {reference["source_id"] for reference in self.state["references"]}
+
+        update = stakeholder_node(self.state, search_fn=fake_search, client=self.client)
+
+        returned_ids = {reference["source_id"] for reference in update["references"]}
+        self.assertFalse(existing_ids & returned_ids)
+
     def test_retry_and_search_error_contracts_are_preserved(self) -> None:
         first, retry = [], []
         def track(calls):
