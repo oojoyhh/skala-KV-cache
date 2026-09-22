@@ -12,11 +12,14 @@
 - LLM 호출이 실패해도 멈추지 않는다: 해당 챕터는 근거 목록으로 대신 싣고 "[E-1002]"를 남긴다.
 """
 
+import datetime
 import glob
 import json
 import os
 import re
 import unicodedata
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from email.utils import parsedate_to_datetime
 
 from fontTools.ttLib import TTFont
@@ -123,9 +126,20 @@ def _date(raw: str, kind: str) -> str:
     return value or year or "n.d."
 
 
+def _readable_title(title: str, url: str) -> str:
+    """태국어 등 폰트에 없는 문자 위주의 제목은 URL 마지막 경로(영문 슬러그)로 대신 쓴다."""
+    letters = [c for c in title if c.isalpha()]
+    foreign = [c for c in letters if not (c.isascii() or "\uac00" <= c <= "\ud7a3")]
+    if letters and len(foreign) > len(letters) / 3:
+        slug = re.sub(r"^\d+-", "", url.rstrip("/").rsplit("/", 1)[-1]).replace("-", " ")
+        return f"{slug} (원문 비영어 제목)"
+    return title
+
+
 def format_reference(r) -> str:
     """노션 가이드 REFERENCE 표기 형식. 작성자가 없으면 기관(사이트)명을 쓴다."""
-    v, t, u = re.sub(r"^www\.", "", r["venue"]), r["title"], r.get("url", "")
+    v, u = re.sub(r"^www\.", "", r["venue"]), r.get("url", "")
+    t = _readable_title(r["title"], u)
     a = (r.get("author") or "").strip() or v
     d = _date(r.get("date", ""), r["kind"])
     if r["kind"] == "patent":
@@ -182,6 +196,21 @@ NO_SYNTHESIS = "출처가 확인된 관점 간 일치·상충 지점이 도출�
 EVIDENCE_CHAPTERS = ("3.", "4-2", "4-3", "4-4", "5.")   # 근거(claim)가 없으면 LLM이 추측으로 채우는 챕터
 
 
+def limits_text(state: State) -> str:
+    """6장 본문: 방법론 한계와 확증편향 방지 조치 (config 기준값으로 고정 작성)."""
+    lines = [
+        "- 본 평가는 논문과 웹 공개 자료에 기반한 추정이다. TRL은 논문 발표와 실제 채택 사이의 시차가 있고, "
+        "TRL 4~6 구간은 수율·실제 성능 같은 비공개 정보가 많아 실제 단계와 다를 수 있다.",
+        f"- 확증편향 방지: 관점마다 지지 쿼리와 한계·반론 쿼리를 각각 {config.QUERIES_PER_STANCE}개씩 검색했다. "
+        f"충분성 검사(관점·기술별 근거 {config.MIN_EVIDENCE}개 이상, 지지·한계·반론 각 1건 이상, 한 출처 비율 "
+        f"{config.SAME_SOURCE_CAP:.0%} 이하)에 미달한 관점만 쿼리를 바꿔 최대 {config.MAX_RETRY}회 재조사했고, "
+        "끝까지 확보하지 못한 근거는 만들지 않고 아래에 기록했다.",
+        "- 웹 자료 중 게시일·작성자가 확인되지 않는 경우(REFERENCE의 n.d.)가 있어 발표 시점 판단에 한계가 있다.",
+        "- 본 보고서는 기술의 우열이나 추천을 판단하지 않으며, 관점별로 확인된 근거의 차이만 정리했다.",
+    ]
+    return "\n".join(lines)
+
+
 def _has_claims(data) -> bool:
     if isinstance(data, list):
         return any(_has_claims(v) for v in data)
@@ -228,13 +257,19 @@ def _keep_same_tech_citations(text: str, cites: Citations, techs_of: dict[str, s
     return "\n".join(SENTENCE.sub(fix_sentence, line) for line in text.split("\n"))
 
 
-RECOMMEND = re.compile(r"(더|가장)\s*(적합|유리|나은|우수|효과적|바람직)|나은 선택|추천|권장|선택하는 것이")
+RECOMMEND = re.compile(r"(더|가장)\s*(적합|유리|나은|우수|효과적|바람직)|나은 선택|추천|권장|선택하는 것이|다른 기술(들)?보다")
+FILLER = ("결론적으로", "결국,", "결국 ", "이와 같이", "이처럼", "종합하면")
+HW_WORDING = re.compile(r"하드웨어\s*(기반|자원|의존)")
 
 
 def _drop_recommendations(text: str) -> str:
     """조건별 기술 추천·우열 문장을 지운다 (과제 원칙: 추천·우열 판정 금지)."""
     lines = []
     for line in text.split("\n"):
+        if line.strip().startswith(FILLER):   # 챕터 끝 일반론 요약 문단
+            continue
+        if "InfiniGen" in line:
+            line = HW_WORDING.sub("메모리 계층 활용", line)
         kept = "".join(m[0] for m in SENTENCE.finditer(line) if not RECOMMEND.search(m[0])).strip()
         bullet = line.lstrip().startswith("- ")
         if kept and not (bullet and kept == "-"):
@@ -316,8 +351,15 @@ def domain_table(state: State, cites: Citations) -> list[list[str]]:
 # ---------------------------------------------------------------------------
 # 본문 (설계서 E 목차 순서)
 # ---------------------------------------------------------------------------
+CAMP_LABEL = {"SW": "SW 진영: KV cache 자체를 작게 만듦", "HW": "메모리 계층 진영: 새 하드웨어 없이 기존 CPU 메모리로 담을 공간을 넓힘"}
+
+
 def _by_tech(state, key, drop=()):
-    return {t: {k: v for k, v in state.get(key, {}).get(t, {}).items() if k not in drop} for t in TECHS}
+    out = {t: {k: v for k, v in state.get(key, {}).get(t, {}).items() if k not in drop} for t in TECHS}
+    for r in out.values():
+        if r.get("camp") in CAMP_LABEL:
+            r["camp"] = CAMP_LABEL[r["camp"]]
+    return out
 
 
 def _trl_view(s) -> dict:
@@ -463,7 +505,9 @@ def build_blocks(state: State, generate) -> list[tuple]:
             data = _synthesis_for_report(data, cites, evidence_source_ids(state))
         else:
             data = cites.attach(data)
-        if title.startswith(EVIDENCE_CHAPTERS) and not _has_claims(data):
+        if title.startswith("6."):
+            text = limits_text(state)
+        elif title.startswith(EVIDENCE_CHAPTERS) and not _has_claims(data):
             text = NO_SYNTHESIS if title.startswith("5.") else NO_EVIDENCE
         else:
             text = _drop_recommendations(
@@ -497,6 +541,9 @@ def build_blocks(state: State, generate) -> list[tuple]:
     refs = cites.reference_lines()
     blocks = [("h1", TITLE), ("h2", "SUMMARY"), ("p", summary), ("note", STANCE_NOTE), ("table", summary_matrix(state)),
               *body, ("h2", "REFERENCE"), ("p", "\n".join(refs) or "인용된 자료 없음")]
+    if any("(n.d.)" in r for r in refs):
+        blocks.append(("note", f"※ n.d.: 게시일이 확인되지 않은 웹 자료 (검색 도구가 게시일을 제공하지 않음). "
+                               f"검색일: {datetime.date.today().isoformat()}"))
     return blocks
 
 
@@ -582,7 +629,51 @@ def to_markdown(blocks) -> str:
     return "\n".join(out)
 
 
-def report_node(state: State, generate_fn=None) -> dict:
+DATE_PATTERNS = [
+    re.compile(r'"(?:datePublished|uploadDate|dateCreated)"\s*:\s*"(\d{4}-\d{2}-\d{2})'),
+    re.compile(r'<meta[^>]+name=["\']citation_(?:publication_|online_)?date["\'][^>]*content=["\'](\d{4}[/-]\d{2}[/-]\d{2})', re.I),
+    re.compile(r'<meta[^>]+(?:property|name|itemprop)=["\'](?:article:published_time|og:published_time|datePublished|'
+               r'pubdate|publishdate|publish-date|date|dc\.date|parsely-pub-date|sailthru\.date)["\'][^>]*?content=["\']'
+               r'(\d{4}-\d{2}-\d{2})', re.I),
+    re.compile(r'<meta[^>]+content=["\'](\d{4}-\d{2}-\d{2})[^"\']*["\'][^>]*(?:property|name|itemprop)=["\']'
+               r'(?:article:published_time|og:published_time|datePublished|pubdate|date)["\']', re.I),
+    re.compile(r'<time[^>]+datetime=["\'](\d{4}-\d{2}-\d{2})', re.I),
+]
+URL_DATE = re.compile(r"/(20\d{2})[/-](\d{2})[/-](\d{2})(?:/|$)")
+
+
+def _published_date(url: str) -> str:
+    """웹 페이지에 적힌 게시일(메타데이터·URL)을 읽는다. 못 찾거나 실패하면 빈 문자열."""
+    m = URL_DATE.search(url)
+    if m:
+        return "-".join(m.groups())
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            html = resp.read(400_000).decode("utf-8", "ignore")
+    except Exception:  # noqa: BLE001 — 게시일은 부가 정보라 실패해도 보고서는 계속
+        return ""
+    for pat in DATE_PATTERNS:
+        m = pat.search(html)
+        if m:
+            return m[1].replace("/", "-")
+    return ""
+
+
+def fill_missing_dates(references: list, fetch=_published_date) -> list:
+    """게시일이 비어 있는 웹 출처만 페이지에서 게시일을 채운다 (검색 도구가 게시일을 주지 않는 경우 대비).
+    ponytail: 순차 대신 10개 병렬, 페이지당 6초 제한. 느리면 워커 수를 늘린다."""
+    targets = sorted({r["url"] for r in references if r.get("kind") == "web" and not r.get("date") and r.get("url")})
+    if not targets:
+        return references
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        found = dict(zip(targets, pool.map(fetch, targets)))
+    return [{**r, "date": found.get(r.get("url"), "")} if r.get("kind") == "web" and not r.get("date") else r
+            for r in references]
+
+
+def report_node(state: State, generate_fn=None, fetch_fn=None) -> dict:
+    state = {**state, "references": fill_missing_dates(state.get("references", []), fetch_fn or _published_date)}
     blocks = build_blocks(state, generate_fn or llm.generate)
     os.makedirs(os.path.dirname(config.REPORT_PATH), exist_ok=True)
     render_pdf(blocks, config.REPORT_PATH)
