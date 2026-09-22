@@ -52,14 +52,27 @@ SEARCH_CACHE_DIR = "data/cache/search"
 # ---------------------------------------------------------------------------
 # RAG (설계서 B-2, B-3)
 # ---------------------------------------------------------------------------
-PAPERS = {  # 기술 → arXiv id, 파일 경로
-    "TurboQuant": {"arxiv_id": "2504.19874", "path": "data/papers/2504.19874_TurboQuant.pdf"},
-    "InfiniGen": {"arxiv_id": "2406.19707", "path": "data/papers/2406.19707_InfiniGen.pdf"},
+PAPERS = {  # 기술 → 논문 검색과 REFERENCE 생성에 필요한 메타데이터
+    "TurboQuant": {
+        "arxiv_id": "2504.19874",
+        "path": "data/papers/2504.19874_TurboQuant.pdf",
+        "title": "TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate",
+        "author": "Zandieh, A. et al.",
+        "date": "2025",
+    },
+    "InfiniGen": {
+        "arxiv_id": "2406.19707",
+        "path": "data/papers/2406.19707_InfiniGen.pdf",
+        "title": "InfiniGen: Efficient Generative Inference of Large Language Models with Dynamic KV Cache Management",
+        "author": "Lee, W., Lee, J., Seo, J., Sim, J.",
+        "date": "2024",
+    },
 }
 EMBEDDING_MODEL = "BAAI/bge-m3"            # langchain_huggingface.HuggingFaceEmbeddings로 로드
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
 TOP_K = 5
+MMR_FETCH_K = 10            # MMR가 최종 Top-k를 고르기 전 검색할 후보 수
 MMR_LAMBDA = 0.7
 RAG_MAX_REWRITE = 2        # 기술 조사 내부 루프: 관련성 부족 시 쿼리 재작성 최대 횟수 (CorrectiveRAG)
 FAISS_INDEX_DIR = "data/index"
