@@ -98,17 +98,3 @@ def evaluate_sufficiency(state: State) -> SufficiencyCheck:
             reasons[perspective] = " / ".join(insufficient)
 
     return validate_sufficiency_check({**values, "reasons": reasons})
-
-
-def needs_retry(check: SufficiencyCheck) -> bool:
-    """Return whether any perspective is insufficient; do not mutate State."""
-
-    return not all(check[perspective] for perspective in PERSPECTIVES)
-
-
-def check_node(state: State) -> dict:
-    """Return the sufficiency result and increment retry_count only when needed."""
-
-    sufficiency = evaluate_sufficiency(state)
-    retry_count = state.get("retry_count", 0) + (1 if needs_retry(sufficiency) else 0)
-    return {"sufficiency": sufficiency, "retry_count": retry_count}
