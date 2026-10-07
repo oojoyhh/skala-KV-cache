@@ -1,5 +1,7 @@
+import copy
 import hashlib
 import json
+from pathlib import Path
 
 import config
 from agents.market import (
@@ -98,10 +100,43 @@ def _run(state=None, search_fn=fake_search, client=None):
 
 
 def test_node_contract_and_both_technologies():
-    result = _run()
-    assert set(result) == {"trl_result", "market_result", "references"}
+    state = sample_state_after_research()
+    result = _run(state)
+    assert set(result) == {"trl_result", "market_result", "references", "node_result"}
     assert set(result["trl_result"]) == set(TECHS)
     assert set(result["market_result"]) == set(TECHS)
+    assert result["node_result"] == {
+        "node": "market",
+        "dispatch_id": state["control"]["dispatch_id"],
+        "status": "success",
+        "error": "",
+    }
+
+
+def test_dispatch_id_is_echoed_without_change():
+    state = sample_state_after_research()
+    state["control"]["dispatch_id"] = 37
+
+    result = _run(state)
+
+    assert result["node_result"]["dispatch_id"] == 37
+
+
+def test_unexpected_execution_error_is_sanitized_and_does_not_escape():
+    state = sample_state_after_research()
+    state["control"]["dispatch_id"] = 41
+    state["tech_sw"] = "unexpected-secret-value"
+
+    result = _run(state)
+
+    assert result == {
+        "node_result": {
+            "node": "market",
+            "dispatch_id": 41,
+            "status": "failed",
+            "error": "E-1002 시장/TRL 실행 실패",
+        }
+    }
 
 
 def test_result_schemas_and_reference_links():
@@ -785,7 +820,7 @@ def test_retry_hint_changes_queries():
 
     state = sample_state_after_research()
     _run(state, search_fn=capture(first_queries))
-    retry_state = dict(state)
+    retry_state = copy.deepcopy(state)
     retry_state["sufficiency"] = {
         "trl": False,
         "market": False,
@@ -796,22 +831,101 @@ def test_retry_hint_changes_queries():
             "market": "TurboQuant: 반론 근거 미확인(negative 0건)",
         },
     }
-    retry_state["retry_count"] = 1
+    retry_state["control"]["evidence_retry_counts"]["market"] = 1
     _run(retry_state, search_fn=capture(retry_queries))
     assert set(first_queries).isdisjoint(retry_queries)
+    assert any("InfiniGen: Evidence 부족" in query for query in retry_queries)
+    assert any("TurboQuant: 반론 근거 미확인" in query for query in retry_queries)
 
 
-def test_all_search_failures_do_not_escape_and_keep_both_keys():
+def test_quality_retry_hint_changes_queries_without_mutating_control():
+    queries = []
+
+    def capture(query, stance="neutral", **kwargs):
+        queries.append(query)
+        return [_record(query, stance)]
+
+    state = sample_state_after_research()
+    state["sufficiency"] = {
+        "trl": True,
+        "market": False,
+        "stakeholder": True,
+        "domain": True,
+        "reasons": {"market": "품질 평가: InfiniGen 시장성 근거 보강 필요"},
+    }
+    control_before = copy.deepcopy(state["control"])
+
+    result = _run(state, search_fn=capture)
+
+    assert result["node_result"]["status"] == "success"
+    assert any(
+        "retry focus: 품질 평가: InfiniGen 시장성 근거 보강 필요" in query
+        for query in queries
+    )
+    assert state["control"] == control_before
+    assert "control" not in result
+
+
+def test_all_search_failures_return_sanitized_failure_without_overwriting_payload():
     def failing_search(*args, **kwargs):
-        raise RuntimeError("provider failure")
+        raise RuntimeError("provider failure secret-token")
 
-    result = _run(search_fn=failing_search)
-    assert set(result["trl_result"]) == set(TECHS)
-    assert set(result["market_result"]) == set(TECHS)
-    assert result["references"] == []
-    for tech in TECHS:
-        assert result["trl_result"][tech]["uncertainty"].startswith("[E-1002]")
-        assert result["market_result"][tech]["summary"].startswith("[E-1002]")
+    state = sample_state_after_research()
+    state["trl_result"] = {"previous": "keep"}
+    state["market_result"] = {"previous": "keep"}
+    result = _run(state, search_fn=failing_search)
+
+    assert set(result) == {"node_result"}
+    assert result["node_result"]["status"] == "failed"
+    assert result["node_result"]["error"].startswith("E-1002")
+    assert "secret-token" not in result["node_result"]["error"]
+    assert state["trl_result"] == {"previous": "keep"}
+    assert state["market_result"] == {"previous": "keep"}
+
+
+def test_all_llm_classification_failures_return_sanitized_failure():
+    class FailingClient:
+        def invoke(self, prompt, response_model):
+            raise RuntimeError("classification secret-token")
+
+    result = _run(client=FailingClient())
+
+    assert set(result) == {"node_result"}
+    assert result["node_result"]["status"] == "failed"
+    assert result["node_result"]["error"].startswith("E-1002")
+    assert "secret-token" not in result["node_result"]["error"]
+
+
+def test_partial_classification_failure_with_valid_evidence_is_success():
+    class PartialClient(FakeStructuredClient):
+        def invoke(self, prompt, response_model):
+            if "대상 기술: InfiniGen" in prompt:
+                raise RuntimeError("one classification failed")
+            return super().invoke(prompt, response_model)
+
+    result = _run(client=PartialClient())
+
+    assert result["node_result"]["status"] == "success"
+    assert result["node_result"]["error"] == ""
+    assert result["market_result"]["InfiniGen"]["summary"].startswith("[E-1004]")
+    assert "[E-1002]" in result["market_result"]["InfiniGen"]["summary"]
+
+
+def test_partial_provider_failure_with_valid_evidence_is_success():
+    failed_once = False
+
+    def partial_search(query, stance="neutral", **kwargs):
+        nonlocal failed_once
+        if not failed_once:
+            failed_once = True
+            raise RuntimeError("one provider call failed")
+        return [_record(query, stance)]
+
+    result = _run(search_fn=partial_search)
+
+    assert result["node_result"]["status"] == "success"
+    assert result["node_result"]["error"] == ""
+    assert result["trl_result"]["TurboQuant"]["uncertainty"].startswith("[E-1002]")
 
 
 def _provider_search(client):
@@ -842,6 +956,8 @@ def test_provider_zero_results_reaches_market_as_e1001(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "SEARCH_CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(config, "USE_SEARCH_CACHE", False)
     result = _run(search_fn=_provider_search(_Provider({"results": []})))
+    assert result["node_result"]["status"] == "success"
+    assert result["node_result"]["error"] == ""
     for tech in TECHS:
         assert result["trl_result"][tech]["uncertainty"].startswith("[E-1001]")
         assert result["market_result"][tech]["summary"].startswith("[E-1001]")
@@ -850,19 +966,20 @@ def test_provider_zero_results_reaches_market_as_e1001(monkeypatch, tmp_path):
 def test_provider_exception_reaches_market_as_e1002_without_escaping(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "SEARCH_CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(config, "USE_SEARCH_CACHE", False)
-    result = _run(search_fn=_provider_search(_Provider(error=RuntimeError("provider down"))))
-    for tech in TECHS:
-        assert result["trl_result"][tech]["uncertainty"].startswith("[E-1002]")
-        assert result["market_result"][tech]["summary"].startswith("[E-1002]")
+    result = _run(
+        search_fn=_provider_search(_Provider(error=RuntimeError("provider down secret-token")))
+    )
+    assert result["node_result"]["status"] == "failed"
+    assert result["node_result"]["error"].startswith("E-1002")
+    assert "secret-token" not in result["node_result"]["error"]
 
 
 def test_invalid_provider_response_reaches_market_as_e1002(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "SEARCH_CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(config, "USE_SEARCH_CACHE", False)
     result = _run(search_fn=_provider_search(_Provider({"unexpected": []})))
-    for tech in TECHS:
-        assert result["trl_result"][tech]["uncertainty"].startswith("[E-1002]")
-        assert result["market_result"][tech]["summary"].startswith("[E-1002]")
+    assert result["node_result"]["status"] == "failed"
+    assert result["node_result"]["error"].startswith("E-1002")
 
 
 def test_one_technology_success_keeps_both_keys_and_marks_e1004():
@@ -874,6 +991,8 @@ def test_one_technology_success_keeps_both_keys_and_marks_e1004():
     result = _run(search_fn=partial_search)
     assert set(result["trl_result"]) == set(TECHS)
     assert set(result["market_result"]) == set(TECHS)
+    assert result["node_result"]["status"] == "success"
+    assert result["node_result"]["error"] == ""
     assert all(
         result["market_result"][tech]["summary"].startswith("[E-1004]") for tech in TECHS
     )
@@ -913,3 +1032,29 @@ def test_no_real_tavily_or_openai_calls_are_needed():
         structured_client=FakeStructuredClient(),
     )
     assert set(result["trl_result"]) == set(TECHS)
+
+
+def test_evidence_retry_limit_uses_supervisor_counter_for_e1005():
+    state = sample_state_after_research()
+    state["sufficiency"] = {
+        "trl": False,
+        "market": True,
+        "stakeholder": True,
+        "domain": True,
+        "reasons": {"trl": "공개 TRL 근거 보강 필요"},
+    }
+    state["control"]["evidence_retry_counts"]["market"] = config.MAX_AGENT_RETRY
+
+    result = _run(state, search_fn=lambda *args, **kwargs: [])
+
+    assert result["node_result"]["status"] == "success"
+    for tech in TECHS:
+        assert result["trl_result"][tech]["uncertainty"].startswith("[E-1005]")
+
+
+def test_market_source_does_not_use_legacy_retry_contract():
+    source = Path("agents/market.py").read_text(encoding="utf-8")
+
+    assert 'state["retry_count"]' not in source
+    assert 'state.get("retry_count"' not in source
+    assert "config.MAX_RETRY" not in source

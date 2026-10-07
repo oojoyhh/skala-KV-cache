@@ -11,8 +11,30 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 import config
-from state import Evidence, Reference, State, TECHS, TechName, TechSummary
+from state import (
+    Evidence,
+    NodeResult,
+    Reference,
+    State,
+    TECHS,
+    TechName,
+    TechSummary,
+)
 
+_EXECUTION_ERROR_CODES = ("[E-1002]", "[E-1003]")
+
+
+def _execution_error(summaries: Mapping[TechName, TechSummary]) -> str:
+    """두 기술 모두 조사되지 못한 경우 라우팅용 실행 오류를 반환한다."""
+    if any(summary["evidence"] for summary in summaries.values()):
+        return ""
+
+    for summary in summaries.values():
+        for limitation in summary["limitations"]:
+            for code in _EXECUTION_ERROR_CODES:
+                if limitation.startswith(code):
+                    return limitation.replace(code, code.strip("[]"), 1)
+    return ""
 
 RetrieveFn = Callable[[str, int], Sequence[Mapping[str, Any]]]
 GenerateFn = Callable[[TechName, str, Sequence[dict[str, Any]]], Any]
@@ -260,20 +282,60 @@ def research_node(
     rewrite_fn: RewriteFn | None = None,
     reference_fn: ReferenceFn | None = None,
 ) -> dict[str, Any]:
-    """두 기술의 TechSummary와 이번 조사에서 사용한 논문 Reference만 반환한다."""
-    summaries: dict[TechName, TechSummary] = {}
-    references: list[Reference] = []
-    for name in TECHS:
-        summary, cited_references = _research_one(
-            name, retrieve_fn, generate_fn, grade_fn, rewrite_fn, reference_fn
-        )
-        summaries[name] = summary
-        references.extend(cited_references)
-    succeeded = [name for name in TECHS if summaries[name]["evidence"]]
-    if len(succeeded) == 1:
-        failed = next(name for name in TECHS if name not in succeeded)
-        summaries[failed]["limitations"].insert(0, "[E-1004] 한 기술만 논문 근거를 확보함")
-    return {"tech_summary": summaries, "references": references}
+    """두 기술의 조사 결과와 이번 실행의 NodeResult를 반환한다."""
+    control = state.get("control") or {}
+    dispatch_id = control.get("dispatch_id", 0)
+
+    try:
+        summaries: dict[TechName, TechSummary] = {}
+        references: list[Reference] = []
+
+        for name in TECHS:
+            summary, cited_references = _research_one(
+                name,
+                retrieve_fn,
+                generate_fn,
+                grade_fn,
+                rewrite_fn,
+                reference_fn,
+            )
+            summaries[name] = summary
+            references.extend(cited_references)
+
+        succeeded = [name for name in TECHS if summaries[name]["evidence"]]
+
+        if len(succeeded) == 1:
+            failed = next(name for name in TECHS if name not in succeeded)
+            summaries[failed]["limitations"].insert(
+                0,
+                "[E-1004] 한 기술만 논문 근거를 확보함",
+            )
+
+        error = _execution_error(summaries)
+        node_result: NodeResult = {
+            "node": "research",
+            "dispatch_id": dispatch_id,
+            "status": "failed" if error else "success",
+            "error": error,
+        }
+
+        return {
+            "tech_summary": summaries,
+            "references": references,
+            "node_result": node_result,
+        }
+
+    except Exception as exc:
+        node_result: NodeResult = {
+            "node": "research",
+            "dispatch_id": dispatch_id,
+            "status": "failed",
+            "error": (
+                "E-1002 기술 조사 실행 실패: "
+                f"{type(exc).__name__}"
+            ),
+        }
+        return {"node_result": node_result}
 
 
 def build_research_node(**dependencies: Any) -> Callable[[State], dict[str, Any]]:

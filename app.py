@@ -29,6 +29,8 @@ def main() -> None:
     parser.add_argument("--use-cache", action="store_true", help="저장된 웹 검색 결과 재사용")
     parser.add_argument("--mermaid", action="store_true", help="그래프 Mermaid를 docs/graph.mmd로 저장하고 종료")
     args = parser.parse_args()
+    # data/·outputs/·prompts/ 등 상대경로가 저장소 기준이 되도록 실행 위치를 고정한다 (재현성)
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
     if args.use_cache:
         config.USE_SEARCH_CACHE = True
