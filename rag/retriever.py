@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 import config
 from rag.index import FaissIndex
-from rag.loader import PaperLoadError
 from state import Reference
 
 
-LOGGER = logging.getLogger(__name__)
 _INDEX: FaissIndex | None = None
 
 
@@ -26,30 +23,32 @@ def _index() -> FaissIndex:
 def retrieve(query: str, k: int = config.TOP_K) -> list[dict[str, Any]]:
     """질의와 관련된 논문 청크를 최대 ``k``개 반환한다.
 
-    PDF 로딩 실패는 E-1003, 모델·인덱스 준비 실패는 E-1002 로그를
-    남기고 빈 목록을 반환한다. 호출 에이전트는 빈 목록을 근거 부족으로 처리한다.
+    PDF 로딩, 모델·인덱스 준비, 검색 실패는 원래 예외를 전달한다.
+    호출 에이전트가 실행 실패와 정상 검색의 근거 부족을 구분한다.
     """
+    # -----------------------------------------------------------------------
+    # 1. 검색할 수 없는 입력은 준비 작업 없이 빈 결과로 반환
+    # -----------------------------------------------------------------------
     if not query.strip() or k <= 0:
         return []
 
-    try:
-        _, vectorstore = _index().build_or_load()
-        retriever = vectorstore.as_retriever(
-            search_type="mmr",
-            search_kwargs={
-                "k": k,
-                "fetch_k": max(config.MMR_FETCH_K, k * 2),
-                "lambda_mult": config.MMR_LAMBDA,
-            },
-        )
-        documents = retriever.invoke(query)
-    except PaperLoadError as error:
-        LOGGER.warning("[E-1003] RAG 검색 준비 실패: %s", error)
-        return []
-    except (OSError, RuntimeError, ValueError) as error:
-        LOGGER.warning("[E-1002] RAG 검색 준비 실패: %s", error)
-        return []
+    # -----------------------------------------------------------------------
+    # 2. 준비·검색 예외는 보존하여 호출 노드가 실패를 분류
+    # -----------------------------------------------------------------------
+    _, vectorstore = _index().build_or_load()
+    retriever = vectorstore.as_retriever(
+        search_type="mmr",
+        search_kwargs={
+            "k": k,
+            "fetch_k": max(config.MMR_FETCH_K, k * 2),
+            "lambda_mult": config.MMR_LAMBDA,
+        },
+    )
+    documents = retriever.invoke(query)
 
+    # -----------------------------------------------------------------------
+    # 3. 정상 검색 결과만 공용 청크 형식으로 변환
+    # -----------------------------------------------------------------------
     return [
         {
             "text": document.page_content,
