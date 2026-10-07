@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 import config
+from rag.loader import PaperLoadError
 from state import (
     Evidence,
     NodeResult,
@@ -22,6 +23,7 @@ from state import (
 )
 
 _EXECUTION_ERROR_CODES = ("[E-1002]", "[E-1003]")
+_NUMBER_PATTERN = re.compile(r"\d+(?:\.\d+)?")
 
 
 def _execution_error(summaries: Mapping[TechName, TechSummary]) -> str:
@@ -110,10 +112,16 @@ def _default_rewrite(query: str, name: TechName, attempt: int) -> str:
         f"기술: {name}\n기존 질의: {query}\n"
         f"찾을 항목: {QUERY_HINTS[name]}\n재검색 회차: {attempt}"
     )
-    rewritten = generate(prompt, role="judge").strip()
-    if not rewritten or rewritten == query:
-        raise ValueError("재작성된 검색 질의가 비어 있거나 기존 질의와 같습니다.")
-    return rewritten
+    return generate(prompt, role="judge").strip()
+
+
+def _numbers_are_supported(value: str, context: str) -> bool:
+    """value의 모든 수치가 context에 독립된 숫자 토큰으로 존재하는지 확인한다."""
+    context_numbers = set(_NUMBER_PATTERN.findall(context))
+    return all(
+        number in context_numbers
+        for number in _NUMBER_PATTERN.findall(value)
+    )
 
 
 def _default_generate(name: TechName, camp: str, chunks: Sequence[dict[str, Any]]) -> Any:
@@ -184,6 +192,7 @@ def _validate_summary(
         for source_id in allowed
     }
     evidence: list[Evidence] = []
+    excluded_numeric_evidence = 0
     for item in raw.get("evidence", []):
         if not isinstance(item, Mapping):
             raise ValueError("Evidence 형식이 잘못되었습니다.")
@@ -192,29 +201,39 @@ def _validate_summary(
         stance = str(item.get("stance", ""))
         if not claim or source_id not in allowed or stance not in {"positive", "negative", "neutral"}:
             raise ValueError("Evidence 주장, 검색 출처 또는 stance가 유효하지 않습니다.")
-        if any(
-            number not in text_by_source[source_id]
-            for number in re.findall(r"\d+(?:\.\d+)?", claim)
-        ):
+        if not _numbers_are_supported(claim, text_by_source[source_id]):
             # 근거 없는 수치 주장만 제외하고, 검증된 다른 Evidence는 유지한다.
+            excluded_numeric_evidence += 1
             continue
         evidence.append({"claim": claim, "source_id": source_id, "stance": stance})
-    if not raw.get("approach") or not raw.get("scope") or not evidence:
-        raise ValueError("기술 원리, 적용 범위 또는 인용 근거가 누락되었습니다.")
-    # 측정값에 등장하는 숫자는 적어도 검색된 논문 발췌 안에 있어야 한다.
+    if not raw.get("approach") or not raw.get("scope"):
+        raise ValueError("기술 원리 또는 적용 범위가 누락되었습니다.")
+    # 근거 없는 수치가 포함된 측정 항목만 제외하고 나머지 결과는 유지한다.
     context = " ".join(chunk["text"] for chunk in chunks)
-    for value in metrics.values():
-        if not isinstance(value, str) or any(
-            number not in context for number in re.findall(r"\d+(?:\.\d+)?", value)
-        ):
-            raise ValueError("측정값의 숫자가 검색된 논문 발췌에 없습니다.")
+    validated_metrics: dict[str, str] = {}
+    for key, value in metrics.items():
+        if not isinstance(value, str):
+            raise ValueError("key_metrics 측정값은 문자열이어야 합니다.")
+        if _numbers_are_supported(value, context):
+            validated_metrics[str(key)] = value
+    limitations = [
+        str(item).strip()
+        for item in raw.get("limitations", [])
+        if str(item).strip()
+    ]
+    if excluded_numeric_evidence and not evidence:
+        limitations.insert(
+            0,
+            "[E-1001] 검증된 논문 근거 없음 — "
+            f"근거 없는 수치 주장 {excluded_numeric_evidence}건 제외",
+        )
     return {
         "name": name,
         "camp": camp,
         "approach": str(raw["approach"]).strip(),
         "scope": str(raw["scope"]).strip(),
-        "key_metrics": {str(key): value for key, value in metrics.items()},
-        "limitations": [str(item).strip() for item in raw.get("limitations", []) if str(item).strip()],
+        "key_metrics": validated_metrics,
+        "limitations": limitations,
         "evidence": evidence,
     }
 
@@ -251,11 +270,17 @@ def _research_one(
                 if chunk["arxiv_id"] == arxiv_id
             ][: config.TOP_K]
             relevant = [chunk for chunk in scoped if grader(query, chunk)]
-            if len(relevant) >= len(config.PAPERS):
+            if relevant:
                 break
             if attempt < config.RAG_MAX_REWRITE:
-                query = rewriter(query, name, attempt + 1)
-        if len(relevant) < len(config.PAPERS):
+                rewritten = rewriter(query, name, attempt + 1)
+                if not isinstance(rewritten, str) or not rewritten.strip():
+                    break
+                rewritten = rewritten.strip()
+                if rewritten == query:
+                    break
+                query = rewritten
+        if not relevant:
             return _empty_summary(name, f"[E-1001] 관련 논문 근거 부족: {name}"), []
         summary = _validate_summary(generator(name, "SW" if name == config.TECH_SW else "HW", relevant), name, relevant)
         cited_chunks = {chunk["source_id"]: chunk for chunk in relevant}
@@ -267,8 +292,10 @@ def _research_one(
                 raise ValueError("논문 Reference와 Evidence의 source_id가 다릅니다.")
             references.append(reference)
         return summary, references
-    except (FileNotFoundError, OSError):
-        return _empty_summary(name, "[E-1003] 논문 PDF 또는 인덱스를 읽지 못함"), []
+    except PaperLoadError:
+        return _empty_summary(name, "[E-1003] 논문 PDF를 읽지 못함"), []
+    except OSError:
+        return _empty_summary(name, "[E-1002] 모델·인덱스·검색 준비 실패"), []
     except Exception:  # 외부 검색·LLM 또는 구조화 결과 오류는 전체 그래프를 중단하지 않는다.
         return _empty_summary(name, "[E-1002] 논문 검색 또는 구조화 출력 실패"), []
 

@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from agents.research import _default_generate, _validate_summary, research_node
+from rag.loader import PaperLoadError
 from state import TECHS, make_initial_state
 from tests.fixtures import sample_state_after_research
 
@@ -364,11 +365,11 @@ class ResearchNodeTest(unittest.TestCase):
             error_code="E-1002",
         )
 
-    def test_pdf_failure_returns_failed_node_result(self):
-        """논문 PDF 또는 인덱스 로딩 실패는 E-1003 failed로 반환한다."""
+    def test_paper_load_failure_returns_failed_node_result(self):
+        """PaperLoadError는 E-1003 failed로 반환한다."""
 
         def broken_retrieve(_query, _k):
-            raise OSError("index unavailable")
+            raise PaperLoadError("paper unavailable")
 
         output = research_node(
             make_initial_state(),
@@ -392,6 +393,30 @@ class ResearchNodeTest(unittest.TestCase):
         self.assert_failed_node_result(
             output,
             error_code="E-1003",
+        )
+
+    def test_generic_os_error_is_api_failure(self):
+        """모델·인덱스·검색 준비 중 OSError는 E-1002로 분류한다."""
+
+        def broken_retrieve(_query, _k):
+            raise OSError("index unavailable")
+
+        output = research_node(
+            make_initial_state(),
+            retrieve_fn=broken_retrieve,
+            reference_fn=fake_reference,
+        )
+
+        for name in TECHS:
+            self.assertTrue(
+                output["tech_summary"][name]["limitations"][0].startswith(
+                    "[E-1002]"
+                )
+            )
+
+        self.assert_failed_node_result(
+            output,
+            error_code="E-1002",
         )
 
     def test_unretrieved_citation_is_rejected_without_crash(self):
@@ -430,8 +455,8 @@ class ResearchNodeTest(unittest.TestCase):
             error_code="E-1002",
         )
 
-    def test_number_absent_from_cited_page_is_rejected(self):
-        """인용 페이지에 없는 수치만 제시한 결과는 거부한다."""
+    def test_number_absent_from_cited_page_is_dropped(self):
+        """인용 페이지에 없는 수치 Evidence만 제외하고 기술 결과는 유지한다."""
 
         def invented_result(name, camp, chunks):
             draft = fake_generate(name, camp, chunks)
@@ -457,10 +482,126 @@ class ResearchNodeTest(unittest.TestCase):
             )
         )
 
-        self.assert_failed_node_result(
-            output,
-            error_code="E-1002",
+        for name in TECHS:
+            self.assertEqual(
+                output["tech_summary"][name]["approach"],
+                "논문에서 확인한 방식",
+            )
+            self.assertEqual(
+                output["tech_summary"][name]["key_metrics"],
+                {"측정 결과": "41.99 tokens/s"},
+            )
+            self.assertEqual(
+                output["tech_summary"][name]["limitations"][0],
+                "[E-1001] 검증된 논문 근거 없음 — "
+                "근거 없는 수치 주장 1건 제외",
+            )
+            self.assertNotIn(
+                "9999",
+                " ".join(output["tech_summary"][name]["limitations"]),
+            )
+
+        self.assert_success_node_result(output)
+
+    def test_numeric_substrings_are_not_accepted_as_evidence(self):
+        """2023의 부분 문자열 3과 20을 별도 수치 근거로 인정하지 않는다."""
+        chunk = {
+            "text": "The baseline was released in 2023.",
+            "source_id": "arxiv:2504.19874#p4",
+            "arxiv_id": "2504.19874",
+            "page": 4,
+            "section": "Evaluation",
+        }
+        draft = {
+            "name": "TurboQuant",
+            "camp": "SW",
+            "approach": "논문에서 확인한 방식",
+            "scope": "논문에서 확인한 적용 범위",
+            "key_metrics": {
+                "연도": "2023",
+                "배속": "3x",
+                "비율": "20 percent",
+            },
+            "limitations": [],
+            "evidence": [
+                {
+                    "claim": "The baseline was released in 2023.",
+                    "source_id": chunk["source_id"],
+                    "stance": "neutral",
+                },
+                {
+                    "claim": "The method achieved 3x speedup.",
+                    "source_id": chunk["source_id"],
+                    "stance": "positive",
+                },
+                {
+                    "claim": "The method reduced traffic by 20 percent.",
+                    "source_id": chunk["source_id"],
+                    "stance": "positive",
+                },
+            ],
+        }
+
+        summary = _validate_summary(draft, "TurboQuant", [chunk])
+
+        self.assertEqual(summary["key_metrics"], {"연도": "2023"})
+        self.assertEqual(len(summary["evidence"]), 1)
+        self.assertIn("2023", summary["evidence"][0]["claim"])
+        self.assertFalse(
+            any(
+                limitation.startswith("[E-1001]")
+                for limitation in summary["limitations"]
+            )
         )
+
+    def test_one_relevant_chunk_is_sufficient(self):
+        """기술별 관련 청크가 하나라도 있으면 생성 단계로 진행한다."""
+
+        def one_page_per_paper(query, k):
+            return [
+                chunk
+                for chunk in fake_retrieve(query + " retry", k)
+                if chunk["page"] == 2
+            ]
+
+        output = research_node(
+            make_initial_state(),
+            retrieve_fn=one_page_per_paper,
+            generate_fn=fake_generate,
+            grade_fn=lambda _query, _chunk: True,
+            reference_fn=fake_reference,
+        )
+
+        self.assertEqual(len(output["references"]), 2)
+        self.assertTrue(
+            all(output["tech_summary"][name]["evidence"] for name in TECHS)
+        )
+        self.assert_success_node_result(output)
+
+    def test_unchanged_rewrite_ends_as_empty_search(self):
+        """동일 질의 재작성은 예외 없이 E-1001 빈 결과로 종료한다."""
+        calls = []
+
+        def empty_retrieve(query, _k):
+            calls.append(query)
+            return []
+
+        output = research_node(
+            make_initial_state(),
+            retrieve_fn=empty_retrieve,
+            grade_fn=lambda _query, _chunk: True,
+            rewrite_fn=lambda query, _name, _attempt: query,
+            reference_fn=fake_reference,
+        )
+
+        self.assertEqual(len(calls), len(TECHS))
+        for name in TECHS:
+            self.assertTrue(
+                output["tech_summary"][name]["limitations"][0].startswith(
+                    "[E-1001]"
+                )
+            )
+        self.assert_success_node_result(output)
 
     def test_invalid_numeric_evidence_is_dropped_without_losing_valid_evidence(
         self,
