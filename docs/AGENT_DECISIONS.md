@@ -171,7 +171,8 @@ Agent 과제(Multi-Agent Orchestration)에서 팀이 내린 큰 결정과 그 �
 
 ## 미결정
 
-- [ ] 역할 분담 (새로 정함)
-- [ ] 새 과제 브랜치 이름(기존 작업과 브랜치로 구분)
-- [ ] 설계서 `docs/RAG-Design_v6.md` 작성과 `docs/DEV_PLAN.md` 갱신
-- [ ] 새 `AGENTS.md`·`CLAUDE.md` 작성
+- [x] 역할 분담 (`AGENTS.md` 담당 표)
+- [x] 새 과제 브랜치 이름: `agent-supervisor`
+- [ ] 설계서 `docs/RAG-Design_v6.md` 작성 (2번)
+- [x] `docs/DEV_PLAN.md` 갱신 (v4, Agent 단계)
+- [x] 새 `AGENTS.md`·`CLAUDE.md` 작성
