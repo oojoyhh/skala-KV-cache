@@ -296,3 +296,21 @@ def test_report_succeeds_when_web_sources_have_no_date(tmp_path, monkeypatch):
     assert out["node_result"]["status"] == "success", out["node_result"]["error"]
     md = open(out["report_md_path"], encoding="utf-8").read()
     assert "(n.d.)" in md and "검색일:" in md
+
+
+def test_synthesis_limitations_are_kept_in_chapter6():
+    """재조사 상한 도달(E-1005) 같은 종합 단계의 한계가 보고서 6장에 남아야 한다."""
+    state = sample_state_after_eval(False)
+    state["synthesis"] = {"agreements": [], "conflicts": [], "neutrality_note": "",
+                          "limitations": ["[E-1005] 재조사 상한 도달: stakeholder 반론 근거 미확인",
+                                          "평가 종합 LLM 응답 일부 누락"]}
+    text = report.limits_text(state)
+    assert "[E-1005] 재조사 상한 도달" in text and "평가 종합 LLM 응답 일부 누락" in text
+    assert "확증편향 방지" in text          # 고정 방법론 문단도 그대로
+
+
+def test_recommendation_regex_catches_comparisons_but_not_tech_terms():
+    dropped = report._drop_recommendations("InfiniGen은 TurboQuant보다 우수하다 [1]. TurboQuant가 우위에 있다 [2].")
+    assert dropped == ""
+    kept = report._drop_recommendations("추천 시스템 서빙에서도 같은 병목이 보고된다 [1].")
+    assert kept.startswith("추천 시스템")   # 기술 용어는 지우지 않는다
