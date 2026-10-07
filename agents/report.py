@@ -37,7 +37,7 @@ from output.citations import (  # noqa: F401 — 외부에서 agents.report 경�
     _published_date,
 )
 from output.renderer import render_pdf, to_markdown
-from state import PERSPECTIVES, TECHS, State, perspective_evidence
+from state import PERSPECTIVES, TECHS, State, perspective_evidence, trl_evidence_count
 
 TITLE = "KV cache 최적화 기술 다관점 평가 보고서"
 TRL_NOTE = ("본 TRL은 공개 정보 기반 추정이며, KV cache 기술은 논문 발표 시점과 실제 채택 간 시차가 있어 "
@@ -100,6 +100,11 @@ def limits_text(state: State) -> str:
         "- 웹 자료 중 게시일·작성자가 확인되지 않는 경우(REFERENCE의 n.d.)가 있어 발표 시점 판단에 한계가 있다.",
         "- 본 보고서는 기술의 우열이나 추천을 판단하지 않으며, 관점별로 확인된 근거의 차이만 정리했다.",
     ]
+    # 평가 종합이 남긴 한계(재조사 상한 도달 E-1005, 종합 실패 등)를 버리지 않고 함께 싣는다.
+    # 단 "<관점> 근거 부족: ..."은 아래 충분성 미달 사유 목록과 같은 내용이라 제외한다.
+    recorded = [x for x in (state.get("synthesis") or {}).get("limitations", [])
+                if str(x).strip() and not re.match(r"^\S+ 근거 부족:", str(x).strip())]
+    lines += [f"- {' '.join(str(x).split())}" for x in dict.fromkeys(recorded)]
     return "\n".join(lines)
 
 
@@ -117,7 +122,14 @@ def _has_claims(data) -> bool:
 
 
 
-RECOMMEND = re.compile(r"(더|가장)\s*(적합|유리|나은|우수|효과적|바람직)|나은 선택|추천|권장|선택하는 것이|다른 기술(들)?보다")
+RECOMMEND = re.compile(
+    r"(더|가장)\s*(적합|유리|나은|우수|효과적|바람직)"      # 더 적합 / 가장 우수
+    r"|보다\s*(우수|유리|낫|뛰어)"                          # B보다 우수하다
+    r"|우위(에 있|를 가진|가 있)"                            # 우위에 있다
+    r"|나은 선택|선택하는 것이|다른 기술(들)?보다"
+    r"|권장(?=\s*(한다|합니다|된다|됨|함|할|하는))"          # '권장 설정' 같은 기술 용어는 제외
+    r"|추천(?!\s*시스템)"                                   # '추천 시스템'은 기술 용어라 제외
+)
 FILLER = ("결론적으로", "결국,", "결국 ", "이와 같이", "이처럼", "종합하면")
 HW_WORDING = re.compile(r"하드웨어\s*(기반|자원|의존)")
 
@@ -228,14 +240,14 @@ def _by_tech(state, key, drop=()):
 
 
 def _trl_view(s) -> dict:
-    """TRL 근거가 판정 규칙(서로 다른 출처 config.MIN_TRL_EVIDENCE개)에 못 미치면 숫자 단계를 넘기지 않는다.
-    출처가 부족하다는 것은 '판정 근거 부족'이지 'TRL 1'이라는 증거가 아니기 때문."""
+    """TRL 근거가 판정 규칙(config.MIN_TRL_EVIDENCE건)에 못 미치면 숫자 단계를 넘기지 않는다.
+    근거가 부족하다는 것은 '판정 근거 부족'이지 'TRL 1'이라는 증거가 아니기 때문."""
     out = {}
     for tech, r in _by_tech(s, "trl_result").items():
-        n = len({e["source_id"] for e in r.get("evidence", [])})
+        n = trl_evidence_count(s, tech)   # 팀 결정 D11: 충분성·품질·보고서가 같은 공용 함수를 쓴다
         r = dict(r)
         if n < config.MIN_TRL_EVIDENCE:
-            r["level"] = f"확정 곤란 (서로 다른 출처 {n}건 < {config.MIN_TRL_EVIDENCE}건)"
+            r["level"] = f"확정 곤란 (TRL 근거 {n}건 < {config.MIN_TRL_EVIDENCE}건)"
             r.pop("rationale", None)   # "TRL 1로 보수적 추정" 같은 문장이 숫자를 되살리지 않게
         out[tech] = r
     return out
@@ -398,7 +410,8 @@ def build_blocks(state: State, generate) -> list[tuple]:
     summary = _write(generate, head, "SUMMARY", "400~600자 (반 페이지 이내)",
                      "보고서 전체의 결론 요약을 쓴다. 인트로덕션이 아니다. '본 보고서는', 배경·목적·기술 소개 문장으로 시작하지 않고 "
                      "첫 문장부터 평가 결과를 쓴다. 관점별 핵심 평가(TRL·시장성·이해관계자·도메인)와 관점 간 평가가 엇갈리는 지점을 "
-                     "\"- \"로 시작하는 4~5개 항목(항목당 2문장 이내)으로 쓰고, 본문의 인용 표기를 유지. 조건별 기술 추천은 쓰지 않는다",
+                     "\"- \"로 시작하는 4~5개 항목(항목당 2문장 이내)으로 쓰고, 본문의 인용 표기를 유지. 조건별 기술 추천은 쓰지 않는다"
+                     + feedback,
                      {"평가 결과": findings}, allowed=_cite_marks(findings))
     summary = _drop_recommendations(_keep_same_tech_citations(summary, cites, techs_of))
     bullets = [line for line in summary.splitlines() if line.lstrip().startswith("- ")][:5]   # 반 페이지 이내

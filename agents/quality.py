@@ -19,8 +19,9 @@ from pydantic import BaseModel, Field
 
 import config
 import llm
-from agents.report import CITE_GROUP, CITE_ITEM, RECOMMEND, _doc_id
-from state import PERSPECTIVE_FIELDS, PERSPECTIVE_NODE, TECHS, perspective_evidence
+from agents.report import RECOMMEND
+from output.citations import CITE_GROUP, CITE_ITEM, _doc_id, _same_doc_key
+from state import PERSPECTIVE_FIELDS, PERSPECTIVE_NODE, TECHS, perspective_evidence, trl_evidence_count
 
 PERSPECTIVE_SECTIONS = {            # 보고서 절 → State 관점 키
     "4-1": "trl", "4-2": "market", "4-3": "stakeholder", "4-4": "domain",
@@ -49,18 +50,24 @@ class JudgeVerdict(BaseModel):
 # ---------------------------------------------------------------------------
 # 보고서 Markdown 파싱
 # ---------------------------------------------------------------------------
+# 보고서가 쓰는 제목 수준만 절 경계로 본다 (output.renderer: 장은 "## ", 4-x 소절은 "### ").
+# LLM이 본문에 쓴 소제목("### 시장 규모", "### 1. 시장 규모")은 절로 보지 않는다.
+SECTION_HEADING = re.compile(r"^(?:##\s+(SUMMARY|REFERENCE|\d+\.?)|###\s+(4-[1-4]\.?))(?:\s|$)")
+
+
 def split_sections(markdown: str) -> dict[str, str]:
-    """'## 3. 기술 개요' → {"3": 본문}. 키는 제목 앞 번호에서 점을 뗀 값(SUMMARY·REFERENCE는 그대로)."""
+    """'## 3. 기술 개요' → {"3": 본문}. 키는 제목 앞 번호에서 점을 뗀 값(SUMMARY·REFERENCE는 그대로).
+
+    LLM이 본문 안에 쓴 소제목(예: '### 시장 규모')은 절로 보지 않고 본문으로 둔다.
+    """
     sections: dict[str, str] = {}
     key, buf = None, []
     for line in markdown.splitlines():
-        heading = re.match(r"^#{2,3}\s+(.+)", line)
+        heading = SECTION_HEADING.match(line)
         if heading:
             if key:
                 sections[key] = "\n".join(buf).strip()
-            title = heading[1].strip()
-            head = title.split()[0]
-            key = head.rstrip(".") if head[0].isdigit() else title
+            key = (heading[1] or heading[2]).rstrip(".")
             buf = []
         elif key:
             buf.append(line)
@@ -78,14 +85,25 @@ def cited_numbers(text: str) -> list[int]:
     return [int(n) for g in CITE_GROUP.findall(text) for n, _ in CITE_ITEM.findall(g)]
 
 
+def doc_key(ref: dict) -> str:
+    """REFERENCE 한 줄에 해당하는 키. 보고서(output.citations)와 같은 기준이라
+    www 유무만 다른 URL이 서로 다른 출처로 세어지지 않는다."""
+    return _same_doc_key(ref) or _doc_id(ref["source_id"])
+
+
+def source_keys(references: list[dict]) -> dict[str, str]:
+    """State의 source_id → REFERENCE 한 줄 키."""
+    return {_doc_id(ref["source_id"]): doc_key(ref) for ref in references}
+
+
 def number_to_docs(refs_in_report: dict[int, str], references: list[dict]) -> dict[int, str]:
-    """REFERENCE 번호 → State 출처의 문서 id. URL(웹)·제목(논문)으로 맞춘다."""
+    """REFERENCE 번호 → 문서 키. URL(웹)·제목(논문)으로 맞춘다."""
     out: dict[int, str] = {}
     for number, line in refs_in_report.items():
         for ref in references:
             url, title = (ref.get("url") or "").strip(), (ref.get("title") or "").strip()
             if (url and url in line) or (title and title[:40] in line):
-                out[number] = _doc_id(ref["source_id"])
+                out[number] = doc_key(ref)
                 break
     return out
 
@@ -150,15 +168,17 @@ def check_neutrality(sections: dict[str, str]) -> tuple[bool, list[str]]:
 def check_bias_control(sections: dict[str, str], state: dict, num_to_doc: dict[int, str]) -> tuple[bool, list[str]]:
     """한계·반론 근거가 있는데 인용하지 않았거나, 출처가 여럿인데 하나에만 몰렸는지."""
     reasons = []
+    keys = source_keys(state.get("references", []))
     for section, perspective in PERSPECTIVE_SECTIONS.items():
         text = sections.get(section) or ""
         cited_docs = {num_to_doc[n] for n in cited_numbers(text) if n in num_to_doc}
         for tech in TECHS:
             evidence = perspective_evidence(state, perspective, tech)
-            negative = {_doc_id(e["source_id"]) for e in evidence if e.get("stance") == "negative"}
+            negative = {keys.get(_doc_id(e["source_id"]), _doc_id(e["source_id"]))
+                        for e in evidence if e.get("stance") == "negative"}
             if negative and not (negative & cited_docs):
                 reasons.append(f"{section}/{tech}: 한계·반론 근거 {len(negative)}건이 있으나 인용되지 않음")
-            docs = {_doc_id(e["source_id"]) for e in evidence}
+            docs = {keys.get(_doc_id(e["source_id"]), _doc_id(e["source_id"])) for e in evidence}
             if len(docs) >= 2 and len(docs & cited_docs) == 1:
                 reasons.append(f"{section}/{tech}: 확보된 출처 {len(docs)}건 중 1건만 인용됨")
     return not reasons, reasons
@@ -170,21 +190,23 @@ def check_bias_control(sections: dict[str, str], state: dict, num_to_doc: dict[i
 def state_gaps(state: dict) -> dict[str, tuple[int, str]]:
     """보고서 수정으로는 못 고치는 State 근거의 결함. 관점 → (근거 수, 사유)."""
     gaps: dict[str, tuple[int, str]] = {}
+    keys = source_keys(state.get("references", []))
     for perspective in PERSPECTIVE_FIELDS:
         total, problems = 0, []
         for tech in TECHS:
             evidence = perspective_evidence(state, perspective, tech)
             total += len(evidence)
-            if perspective == "trl":   # TRL은 개수 기준만 본다 (supervisor의 충분성 기준과 동일)
-                if len({_doc_id(e["source_id"]) for e in evidence}) < config.MIN_TRL_EVIDENCE:
-                    problems.append(f"{tech} 서로 다른 출처 {config.MIN_TRL_EVIDENCE}건 미만")
+            if perspective == "trl":   # 팀 결정 D11: 충분성·품질·보고서가 같은 공용 함수를 쓴다
+                count = trl_evidence_count(state, tech)
+                if count < config.MIN_TRL_EVIDENCE:
+                    problems.append(f"{tech} TRL 근거 {count}건 < {config.MIN_TRL_EVIDENCE}건")
                 continue
             if not evidence:
                 problems.append(f"{tech} 근거 없음")
                 continue
             if not any(e.get("stance") == "negative" for e in evidence):
                 problems.append(f"{tech} 한계·반론 근거 없음")
-            if len({_doc_id(e["source_id"]) for e in evidence}) < 2:
+            if len({keys.get(_doc_id(e["source_id"]), _doc_id(e["source_id"])) for e in evidence}) < 2:
                 problems.append(f"{tech} 출처 1건")
         if problems:
             gaps[perspective] = (total, ", ".join(problems))
@@ -226,11 +248,12 @@ def judge_input(sections: dict[str, str], state: dict, num_to_doc: dict[int, str
     """Judge 입력: SUMMARY·4-1~4-4·5장 본문 + 그 절이 인용한 Evidence claim (전문 금지)."""
     body = "\n\n".join(f"## {name}\n{sections.get(name, '')}" for name in JUDGE_SECTIONS)
     cited_docs = {num_to_doc[n] for n in cited_numbers(body) if n in num_to_doc}
+    keys = source_keys(state.get("references", []))
     claims = []
     for perspective in PERSPECTIVE_FIELDS:
         for tech in TECHS:
             for e in perspective_evidence(state, perspective, tech):
-                if _doc_id(e["source_id"]) in cited_docs:
+                if keys.get(_doc_id(e["source_id"]), _doc_id(e["source_id"])) in cited_docs:
                     claims.append(f"- [{perspective}/{tech}] ({e.get('stance')}) {e['claim']}")
     return f"{body}\n\n## 보고서가 인용한 근거 목록\n" + ("\n".join(claims[:60]) or "(없음)")
 
