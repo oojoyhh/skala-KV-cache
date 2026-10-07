@@ -12,6 +12,7 @@ import config
 import llm
 from agents import report
 from agents.report import Citations, build_blocks, report_node
+from output import citations, renderer
 from tests.fixtures import sample_state_after_eval
 
 
@@ -141,8 +142,8 @@ def test_limitations_always_list_sufficiency_reasons():
 def test_glyphs_missing_from_font_are_spelled_out():
     from fontTools.ttLib import TTFont
 
-    cmap = TTFont(report._font_file()).getBestCmap()
-    assert report._printable("alpha=α, λ=0.7, ① ✅", cmap) == "alpha=alpha, lambda=0.7, (1) "
+    cmap = TTFont(renderer._font_file()).getBestCmap()
+    assert renderer._printable("alpha=α, λ=0.7, ① ✅", cmap) == "alpha=alpha, lambda=0.7, (1) "
 
 
 def test_citations_not_in_chapter_input_are_removed():
@@ -267,8 +268,8 @@ def test_final_wording_guards():
     assert report._drop_recommendations("TurboQuant는 다른 기술들보다 우수하다 [3]. 압축률은 4.5배다 [1].") == "압축률은 4.5배다 [1]."
     th = "อัลกอริทึมการบีบอัด TurboQuant ของ Google คืออะไร"
     url = "https://tradingkey.com/th/analysis/261728273-what-is-google-turboquant-compression"
-    assert report._readable_title(th, url) == "what is google turboquant compression (원문 비영어 제목)"
-    assert report._readable_title("Google TurboQuant 한국어 제목", url) == "Google TurboQuant 한국어 제목"
+    assert citations._readable_title(th, url) == "what is google turboquant compression (원문 비영어 제목)"
+    assert citations._readable_title("Google TurboQuant 한국어 제목", url) == "Google TurboQuant 한국어 제목"
 
 
 def test_missing_web_dates_are_filled_from_page_not_invented():
@@ -279,6 +280,19 @@ def test_missing_web_dates_are_filled_from_page_not_invented():
         {"kind": "paper", "url": "https://arxiv.org/abs/1", "date": "2025"},
     ]
     pages = {"https://a.com/x": "2026-05-11", "https://b.com/2026/03/29/y": ""}
-    out = report.fill_missing_dates(refs, fetch=lambda u: pages.get(u) or report.URL_DATE.search(u) and "-".join(report.URL_DATE.search(u).groups()) or "")
+    out = citations.fill_missing_dates(refs, fetch=lambda u: pages.get(u) or citations.URL_DATE.search(u) and "-".join(citations.URL_DATE.search(u).groups()) or "")
     assert [r["date"] for r in out] == ["2026-05-11", "2026-03-29", "2026-01-01", "2025"]
-    assert report.fill_missing_dates([{"kind": "web", "url": "https://d.com", "date": ""}], fetch=lambda u: "")[0]["date"] == ""
+    assert citations.fill_missing_dates([{"kind": "web", "url": "https://d.com", "date": ""}], fetch=lambda u: "")[0]["date"] == ""
+
+
+def test_report_succeeds_when_web_sources_have_no_date(tmp_path, monkeypatch):
+    """게시일 없는 웹 출처(n.d.)가 있어도 보고서가 생성돼야 한다 (REFERENCE 주석이 datetime을 쓴다)."""
+    monkeypatch.setattr(config, "REPORT_PATH", str(tmp_path / config.REPORT_FILENAME))
+    state = sample_state_after_eval(True)
+    for ref in state["references"]:
+        if ref["kind"] == "web":
+            ref["date"] = ""
+    out = report_node(state, generate_fn=fake_generate, fetch_fn=lambda url: "")   # 게시일 조회도 실패
+    assert out["node_result"]["status"] == "success", out["node_result"]["error"]
+    md = open(out["report_md_path"], encoding="utf-8").read()
+    assert "(n.d.)" in md and "검색일:" in md
