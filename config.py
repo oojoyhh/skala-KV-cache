@@ -1,6 +1,7 @@
 """공통 설정 — 수치·모델명·경로는 코드에 직접 쓰지 말고 여기서 가져온다.
 
-기준: 설계서 docs/RAG-Design_v5.md, docs/DEV_PLAN.md §4.  변경은 5번(그래프 총괄)에게 요청.
+기준: 설계서 docs/RAG-Design_v5.md, docs/DEV_PLAN.md §4, Agent 계약 docs/AGENT_CONTRACT.md 5·6장.
+변경은 5번(그래프 총괄)에게 요청.
 환경변수(.env)로 덮어쓸 수 있는 값은 os.getenv로 읽는다.
 """
 
@@ -30,12 +31,29 @@ TEMPERATURE = 0                                                  # 재현성
 # ---------------------------------------------------------------------------
 # 충분성 검사 · 루프 (설계서 D-2, DEV_PLAN §3-3) — 관점별·기술별로 적용
 # ---------------------------------------------------------------------------
-MAX_RETRY = 2            # 재조사 최대 횟수. retry_count > MAX_RETRY 이면 평가 종합으로
+MAX_RETRY = 2            # [폐기 예정] MAX_AGENT_RETRY로 대체. 각 담당자가 옮긴 뒤 5번이 삭제
 MIN_EVIDENCE = 4         # 관점·기술별 최소 Evidence 수 (trl 제외)
 MIN_TRL_EVIDENCE = 2     # TRL 근거 최소 수
 MIN_POSITIVE = 1         # 지지(positive) 근거 최소 수
 MIN_NEGATIVE = 1         # 한계·반론(negative) 근거 최소 수 — 없으면 재조사, 끝까지 없으면 만들지 않고 reasons·한계점에 기록
 SAME_SOURCE_CAP = 0.5    # 한 source_id가 관점 근거에서 차지할 수 있는 최대 비율
+
+# ---------------------------------------------------------------------------
+# Supervisor 루프 상한 (docs/AGENT_CONTRACT.md 5장)
+# ---------------------------------------------------------------------------
+MAX_EXEC_RETRY = 1       # 노드 실행 실패 시 재시도 횟수 (7개 노드 공통)
+MAX_AGENT_RETRY = 2      # 관점 노드 하나의 근거 부족 재조사 횟수
+MAX_REPORT_RETRY = 1     # 품질 미달 시 보고서 재작성 횟수
+MAX_TOTAL_STEPS = 20     # 하위 노드 실행 횟수 안전장치. 도달하면 마무리 모드 (품질 통과 조건 아님)
+MAX_REPORT_PAGES = 10    # 보고서 최대 쪽수
+RECURSION_LIMIT = 2 * (MAX_TOTAL_STEPS + 3) + 10   # LangGraph recursion_limit (supervisor 방문 포함)
+
+# ---------------------------------------------------------------------------
+# 관측성 · LangSmith (docs/AGENT_CONTRACT.md 6장)
+# 추적은 .env의 LANGSMITH_TRACING=true + LANGSMITH_API_KEY로 켠다. 키는 코드에 쓰지 않는다.
+# 선택 사항이라 REQUIRED_ENV에 넣지 않는다 (--dummy·키 없는 실행도 동작)
+# ---------------------------------------------------------------------------
+LANGSMITH_PROJECT = os.getenv("LANGSMITH_PROJECT", "skala-kv-cache-agent")
 
 # ---------------------------------------------------------------------------
 # 웹 검색 (Tavily) — 확증편향 방지: 지지·한계·반론 쿼리 각 2개 이상
