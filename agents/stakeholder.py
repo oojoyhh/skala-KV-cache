@@ -10,7 +10,7 @@ from typing import Any, Callable, Protocol, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
 import config
-from state import Evidence, Reference, StakeholderResult, State, Stance, TechName, retry_hint
+from state import Evidence, NodeResult, Reference, StakeholderResult, State, Stance, TechName, retry_hint
 
 
 class EvidenceSelection(BaseModel):
@@ -218,15 +218,38 @@ def stakeholder_node(
                 state["tech_hw"]: _empty_result(message),
             },
             "references": [],
+            "node_result": NodeResult(
+                node="stakeholder",
+                dispatch_id=state["control"]["dispatch_id"],
+                status="failed",
+                error=f"E-1002 검색 도구 사용 실패: {exc}",
+            ),
         }
 
     if client is None:
-        from llm import StructuredClient
+        try:
+            from llm import StructuredClient
 
-        client = StructuredClient()
+            client = StructuredClient()
+        except Exception as exc:  # noqa: BLE001 - client setup failure is E-1002
+            message = f"[E-1002] LLM 클라이언트 생성 실패: {exc}"
+            return {
+                "stakeholder_result": {
+                    state["tech_sw"]: _empty_result(message),
+                    state["tech_hw"]: _empty_result(message),
+                },
+                "references": [],
+                "node_result": NodeResult(
+                    node="stakeholder",
+                    dispatch_id=state["control"]["dispatch_id"],
+                    status="failed",
+                    error=f"E-1002 LLM 클라이언트 생성 실패: {exc}",
+                ),
+            }
 
     results: dict[TechName, StakeholderResult] = {}
     references: list[Reference] = []
+    execution_errors: list[str] = []
     hint = retry_hint(state, "stakeholder")
     for technology in (state["tech_sw"], state["tech_hw"]):
         candidates: list[Evidence] = []
@@ -258,17 +281,21 @@ def stakeholder_node(
                         candidates.append(candidate)
         except Exception as exc:  # noqa: BLE001 - external search failure must not stop the graph
             results[technology] = _empty_result(f"[E-1002] 검색 실패: {exc}")
+            execution_errors.append(f"E-1002 검색 실패: {exc}")
             continue
 
         if not candidates:
             code = "[E-1002] 검색 실패" if search_failed else "[E-1001] 검색 결과 없음"
             results[technology] = _empty_result(f"{code}: {last_query}")
+            if search_failed:
+                execution_errors.append(f"E-1002 검색 실패: {last_query}")
             continue
 
         try:
             result = evaluate_stakeholders(technology, candidates, client, classify_stance=True)
         except Exception as exc:  # noqa: BLE001 - structured LLM/validation failure is E-1002
             results[technology] = _empty_result(f"[E-1002] 이해관계자 분류 실패: {exc}")
+            execution_errors.append(f"E-1002 이해관계자 분류 실패: {exc}")
             continue
 
         results[technology] = result
@@ -288,4 +315,14 @@ def stakeholder_node(
             if source_id in used_ids
         )
 
-    return {"stakeholder_result": results, "references": references}
+    error = " / ".join(execution_errors)
+    return {
+        "stakeholder_result": results,
+        "references": references,
+        "node_result": NodeResult(
+            node="stakeholder",
+            dispatch_id=state["control"]["dispatch_id"],
+            status="failed" if execution_errors else "success",
+            error=error,
+        ),
+    }
