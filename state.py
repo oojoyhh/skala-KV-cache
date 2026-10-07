@@ -18,7 +18,10 @@
 
 import operator
 import uuid
+from collections.abc import Iterable
 from typing import Annotated, Literal, TypedDict
+
+import config
 
 # ---------------------------------------------------------------------------
 # 기본 타입
@@ -28,15 +31,16 @@ Stance = Literal["positive", "negative", "neutral"]
 # stance 정의 (설계서 v5 D-1): positive = 지지(supporting), negative = 한계·반론(limitation/challenging),
 # neutral = 중립·배경. negative는 "나쁜 평가"가 아니며, 검색으로 확보된 근거만 쓴다(개수 맞추기용 생성 금지).
 
-TECH_SW: TechName = "TurboQuant"
-TECH_HW: TechName = "InfiniGen"
+# 선정 기술·도메인 값의 기준은 config 한 곳 (설계서 B-1). 여기서는 타입만 붙여 다시 쓴다.
+TECH_SW: TechName = config.TECH_SW
+TECH_HW: TechName = config.TECH_HW
 TECHS: tuple[TechName, ...] = (TECH_SW, TECH_HW)
 
 # 충분성 검사가 판정하는 4개 관점 (SufficiencyCheck 키, reasons 키와 동일)
 Perspective = Literal["trl", "market", "stakeholder", "domain"]
 PERSPECTIVES: tuple[Perspective, ...] = ("trl", "market", "stakeholder", "domain")
 
-DOMAIN = "데이터센터/클라우드 서빙"
+DOMAIN: str = config.DOMAIN
 
 
 # ---------------------------------------------------------------------------
@@ -274,3 +278,43 @@ def retry_hint(state: State, perspective: str) -> str:
     평가 노드는 이 값이 있으면 검색 쿼리를 바꿔야 한다(같은 쿼리 반복 금지).
     """
     return state.get("sufficiency", {}).get("reasons", {}).get(perspective, "")
+
+
+# ---------------------------------------------------------------------------
+# 출처 ID · Reference 공용 함수 (교수님 코드 피드백: 출처 처리 공통화)
+# 각 모듈에서 문자열을 직접 만들거나 병합 로직을 따로 두지 말고 이 함수를 쓴다.
+# 웹 출처 ID는 URL 정규화가 필요해 tools.web_search.make_source_id(3번)가 만든다.
+# ---------------------------------------------------------------------------
+def paper_source_id(arxiv_id: str, page: int) -> str:
+    """논문 페이지 출처 ID: "arxiv:<id>#p<page>" (청크·Evidence·Reference가 같은 값을 쓴다)."""
+    return f"arxiv:{arxiv_id}#p{page}"
+
+
+def doc_id(source_id: str) -> str:
+    """문서 단위 ID. 논문은 페이지(#p..)를 뗀 "arxiv:<id>", 웹은 그대로. 보고서 REFERENCE 병합·출처 다양성 계산용."""
+    return source_id.split("#")[0]
+
+
+def merge_references(references: Iterable[Reference]) -> list[Reference]:
+    """같은 source_id의 Reference를 하나로 합친다 (입력 순서 유지, 입력은 바꾸지 않음).
+
+    - used_by: 합집합(순서 유지)
+    - stance: 서로 다르면 "neutral"
+    - author·date·title·venue: 비어 있는 값은 다른 쪽 값으로 채운다
+    문서 단위(같은 논문의 여러 페이지) 병합은 하지 않는다 — 그건 보고서가 doc_id로 한다.
+    """
+    merged: dict[str, Reference] = {}
+    for reference in references:
+        incoming = dict(reference)
+        incoming["used_by"] = list(dict.fromkeys(incoming.get("used_by") or []))
+        existing = merged.get(incoming["source_id"])
+        if existing is None:
+            merged[incoming["source_id"]] = incoming  # type: ignore[assignment]
+            continue
+        existing["used_by"] = list(dict.fromkeys(existing["used_by"] + incoming["used_by"]))
+        if existing["stance"] != incoming["stance"]:
+            existing["stance"] = "neutral"
+        for field in ("author", "date", "title", "venue", "url"):
+            if not existing.get(field) and incoming.get(field):
+                existing[field] = incoming[field]
+    return list(merged.values())

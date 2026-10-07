@@ -31,10 +31,12 @@ skala-KV-cache/
 │   ├── market.py          # 📊 시장 평가 + TRL                                                  3번
 │   ├── stakeholder.py     # 🤝 이해관계자 평가                                                  4번
 │   ├── domain.py          # 🏭 도메인 평가                                                      4번
+│   ├── common.py          # 🧩 domain·stakeholder 공통 처리 (검색→Evidence 후보, 구조화 출력)  4번
 │   ├── check.py           # ✅ 충분성 판정 helper (evaluate_sufficiency — supervisor가 호출)    4번
 │   ├── synthesis.py       # ⚖️ 평가 종합                                                        5번
 │   ├── report.py          # 📝 보고서 생성                                                      6번
 │   └── quality.py         # 🧪 품질 평가 (Hybrid: 규칙 + LLM Judge)                             6번
+├── output/                # 보고서 출력 코드: citations.py(인용·REFERENCE) · renderer.py(MD·PDF)  6번
 ├── rag/                   # loader.py · index.py · retriever.py                                 1번
 ├── tools/web_search.py    # 🌐 웹 검색 도구 (3·4번 공용)                                        3번
 ├── prompts/               # 에이전트별 프롬프트 템플릿 (<에이전트명>.md)                        각 담당
@@ -44,7 +46,7 @@ skala-KV-cache/
 ├── data/index/            # FAISS 인덱스 캐시 (git 제외)                                       1번
 ├── data/cache/search/     # 웹 검색 캐시 (쿼리별 JSON, git 제외)                               3번
 ├── assets/fonts/          # 보고서 PDF 한글 폰트                                               6번
-├── outputs/               # 보고서 PDF·Markdown (git 제외)
+├── outputs/               # 보고서 PDF·Markdown 생성물 (git 제외) — 코드 폴더 output/와 다름
 ├── docs/                  # AGENT_CONTRACT.md · AGENT_DECISIONS.md · DEV_PLAN.md · RAG-Design_vN.md   5번 (설계서 v6은 2번)
 ├── docs/private/          # notion-guide-notes.md (과제 안내 요약 — git 제외, Slack으로 배포)
 ├── state.py  graph.py  app.py  config.py  llm.py                                                5번
@@ -120,6 +122,15 @@ structured(prompt: str, response_model: type[BaseModel], role="judge") -> BaseMo
 generate(prompt: str, role="generator") -> str
 StructuredClient(role="judge")                    # .invoke(prompt, response_model)
 #   4번의 StructuredOutputClient.invoke(prompt, response_model)와 같은 형태 → 그대로 주입 가능
+```
+
+```python
+# state.py (5번) — 출처 ID·Reference 공용 함수. 같은 기능을 파일마다 다시 만들지 않는다
+paper_source_id(arxiv_id: str, page: int) -> str       # "arxiv:<id>#p<page>"
+doc_id(source_id: str) -> str                          # 문서 단위 ID ("#p.." 제거) — REFERENCE 병합·출처 다양성
+merge_references(references) -> list[Reference]        # 같은 source_id 병합(used_by 합집합, stance 다르면 neutral, 빈 메타 채움)
+# 웹 출처 ID·Reference 변환은 tools/web_search.py의 make_source_id()·to_reference()(3번)
+# 선정 기술·도메인(TECH_SW·TECH_HW·DOMAIN)의 기준은 config. state는 타입만 붙여 다시 쓴다
 ```
 
 **논문 출처 연결 계약 (설계서 D-1·`state.py`와 동일)**
