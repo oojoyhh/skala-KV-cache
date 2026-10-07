@@ -2,6 +2,9 @@
 
 본 프로젝트는 KV cache 최적화 기술을 소프트웨어, 하드웨어 두 진영에서 선정하여, TRL·시장·이해관계자·도메인 관점에서 평가하는 **Supervisor 패턴** 기반으로 설계·개발하는 프로젝트입니다. 보고서 생성 후에는 품질 평가 노드가 Groundedness·중립성·편향 통제·관점 커버리지를 판정하고, 미달이면 재작성 루프를 돕니다.
 
+## github link
+https://github.com/oojoyhh/skala-KV-cache/tree/agent-supervisor
+
 ## Overview
 
 - **Objective**: 하나의 기술을 복수 관점에서 비교 평가 (우열 판정·추천이 아니라, 관점에 따라 평가가 어떻게 갈리는지를 드러냄)
