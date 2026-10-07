@@ -3,7 +3,7 @@
 이 저장소에서 코드를 작성·수정하는 AI 도구(Claude Code, Codex, Copilot, Cursor 등)는 **작업 전에 이 파일을 따른다.**
 사람 팀원도 같은 규칙을 따른다.
 
-- **기준 문서:** `docs/AGENT_CONTRACT.md`(공통 계약 v2.2.2)가 최우선이다. 결정 배경은 `docs/AGENT_DECISIONS.md`, 기존 RAG 설계는 `docs/RAG-Design_v5.md`(v6 작성 예정), 계약에 없는 개발 약속(도구 함수·충분성 기준·설정·예외 처리)은 `docs/DEV_PLAN.md`(v4)를 본다.
+- **기준 문서:** `docs/AGENT_CONTRACT.md`(공통 계약 v2.2.3)가 최우선이다. 결정 배경은 `docs/AGENT_DECISIONS.md`, 기존 RAG 설계는 `docs/RAG-Design_v5.md`(v6 작성 예정), 계약에 없는 개발 약속(도구 함수·충분성 기준·설정·예외 처리)은 `docs/DEV_PLAN.md`(v4)를 본다.
 - 계약과 이 파일이 다르면 **계약이 우선**이다.
 
 ## 프로젝트
@@ -92,7 +92,7 @@ SW 기술(TurboQuant)과 HW 기술(InfiniGen)을 TRL·시장·이해관계자·�
 
 ## 담당과 파일
 
-| # | 담당자 | 역할 | 수정 가능한 파일 | 할 일 (계약 v2.2.2 기준) |
+| # | 담당자 | 역할 | 수정 가능한 파일 | 할 일 (계약 v2.2.3 기준) |
 |---|---|---|---|---|
 | 1 | 한석휘 | 테스트·검증 | `tests/fixtures.py`, `tests/test_supervisor.py`, (기존) `rag/`, `data/papers/`, `tests/test_rag*.py` | `DUMMY_NODES`가 `node_result`(`dispatch_id` 포함)를 반환하도록 수정, quality 더미 추가(`action`·`target_node` 포함), 샘플 State에 `control`·`report_version` 추가. 계약 8장 라우팅 사례 테스트 작성(품질 기반 재조사 경로 포함). 새 환경 재현성 검증 |
 | 2 | 김명하 | 기술 조사 + 설계 문서 | `agents/research.py`, `prompts/research*.md`, `tests/test_research*.py`, `eval/`, `docs/RAG-Design_v6.md` | `node_result` 반환 추가. 설계서 v6 작성(패턴, State D-1, 그래프 D-2, 품질 평가) — 계약서와 일치시킨다 |
