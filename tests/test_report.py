@@ -236,7 +236,8 @@ def test_single_tech_sentence_keeps_only_its_own_citations():
         "InfiniGen은 전송 부담이 보고된다 [2]. 두 기술 모두 TurboQuant·InfiniGen 근거가 있다 [1][2].")
 
 
-def test_trl_without_enough_sources_is_not_a_number():
+def test_trl_without_enough_evidence_is_not_a_number():
+    """팀 결정 D11: TRL 근거는 개수 기준. 기준 미달이면 숫자 단계를 쓰지 않는다."""
     state = sample_state_after_eval(True)
     state["trl_result"]["TurboQuant"]["evidence"] = state["trl_result"]["TurboQuant"]["evidence"][:1]
     state["trl_result"]["TurboQuant"]["level"] = 1
@@ -245,7 +246,7 @@ def test_trl_without_enough_sources_is_not_a_number():
     blocks = build_blocks(state, lambda p: prompts.append(p) or "본문")
     trl_prompt = next(p for p in prompts if "## 챕터: 4-1" in p)
     assert "확정 곤란" in trl_prompt and "TRL 1로 보수적" not in trl_prompt
-    assert ("fixed", "판정 결과: TurboQuant 확정 곤란 (서로 다른 출처 1건 < 2건) / InfiniGen TRL 4") in blocks
+    assert ("fixed", "판정 결과: TurboQuant 확정 곤란 (TRL 근거 1건 < 2건) / InfiniGen TRL 4") in blocks
 
 
 def test_recommendation_sentences_are_removed():
@@ -296,3 +297,39 @@ def test_report_succeeds_when_web_sources_have_no_date(tmp_path, monkeypatch):
     assert out["node_result"]["status"] == "success", out["node_result"]["error"]
     md = open(out["report_md_path"], encoding="utf-8").read()
     assert "(n.d.)" in md and "검색일:" in md
+
+
+def test_synthesis_limitations_are_kept_in_chapter6():
+    """재조사 상한 도달(E-1005) 같은 종합 단계의 한계가 보고서 6장에 남아야 한다."""
+    state = sample_state_after_eval(False)
+    state["synthesis"] = {"agreements": [], "conflicts": [], "neutrality_note": "",
+                          "limitations": ["[E-1005] 재조사 상한 도달: stakeholder 반론 근거 미확인",
+                                          "평가 종합 LLM 응답 일부 누락"]}
+    text = report.limits_text(state)
+    assert "[E-1005] 재조사 상한 도달" in text and "평가 종합 LLM 응답 일부 누락" in text
+    assert "확증편향 방지" in text          # 고정 방법론 문단도 그대로
+
+
+def test_recommendation_regex_catches_comparisons_but_not_tech_terms():
+    dropped = report._drop_recommendations("InfiniGen은 TurboQuant보다 우수하다 [1]. TurboQuant가 우위에 있다 [2].")
+    assert dropped == ""
+    kept = report._drop_recommendations("추천 시스템 서빙에서도 같은 병목이 보고된다 [1].")
+    assert kept.startswith("추천 시스템")   # 기술 용어는 지우지 않는다
+
+
+def test_chapter6_does_not_repeat_sufficiency_reasons():
+    """6장: 충분성 미달 사유 목록과 같은 내용이 synthesis 한계로 두 번 나오지 않는다."""
+    state = sample_state_after_eval(False)
+    state["synthesis"] = {"agreements": [], "conflicts": [], "neutrality_note": "", "limitations": [
+        "이해관계자 근거 부족: InfiniGen: 반론 근거 미확인(negative 0건)",      # 아래 목록과 중복 → 제외
+        "[E-1005] 재조사 상한 도달: 이해관계자 근거 부족 상태로 종합",          # 유지
+    ]}
+    text = report.limits_text(state)
+    assert "[E-1005] 재조사 상한 도달" in text
+    assert "이해관계자 근거 부족: InfiniGen" not in text
+
+
+def test_recommendation_regex_keeps_technical_terms():
+    kept = report._drop_recommendations("권장 설정은 Top-5다 [1].")
+    assert kept.startswith("권장 설정")
+    assert report._drop_recommendations("InfiniGen 도입을 권장한다 [1].") == ""

@@ -83,6 +83,32 @@ def test_published_datetime_is_normalized_to_date(monkeypatch, tmp_path):
     assert records[0]["date"] == "2026-09-21"
 
 
+def test_published_at_is_preserved(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    result = _result()
+    result.pop("published_date")
+    result["published_at"] = "2026-03-27T10:00:00Z"
+
+    records = search_web(
+        "published at result", "neutral", client=FakeTavilyClient({"results": [result]})
+    )
+
+    assert records[0]["date"] == "2026-03-27"
+    assert to_reference(records[0])["date"] == "2026-03-27"
+
+
+def test_published_date_takes_priority_over_published_at(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    result = _result(date="2026-03-28")
+    result["published_at"] = "2026-03-27T10:00:00Z"
+
+    records = search_web(
+        "date priority result", "neutral", client=FakeTavilyClient({"results": [result]})
+    )
+
+    assert records[0]["date"] == "2026-03-28"
+
+
 def test_date_field_is_used_when_published_date_is_missing(monkeypatch, tmp_path):
     _configure(monkeypatch, tmp_path)
     result = _result()

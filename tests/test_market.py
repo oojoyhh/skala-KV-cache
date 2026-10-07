@@ -234,6 +234,66 @@ def test_trl8_requires_release_and_customer_or_operational_validation():
     assert _inferred_trl_ceiling(record) == 8
 
 
+def test_two_pilot_in_production_sources_cannot_exceed_trl7():
+    records = [
+        {"title": "Pilot in production", "content": "customer cloud pilot in production"},
+        {"title": "Production pilot", "content": "pilot in production environment"},
+    ]
+    items = [
+        MarketEvidenceItem(
+            source_id=f"web:pilot{index}",
+            claim=record["content"],
+            stance="neutral",
+            trl_level=_inferred_trl_ceiling(record),
+        )
+        for index, record in enumerate(records)
+    ]
+
+    assert _trl_estimate("TurboQuant", items, "")["level"] <= 7
+
+
+def test_preview_and_beta_signals_cannot_reach_trl8_or_trl9():
+    records = [
+        {"title": "Public preview", "content": "public preview in a customer cloud"},
+        {"title": "Beta", "content": "beta in a production environment"},
+    ]
+
+    assert all(_inferred_trl_ceiling(record) <= 7 for record in records)
+
+
+def test_product_integration_pull_request_is_not_trl8_or_trl9_evidence():
+    records = [
+        {"title": "Product integration PR opened", "content": "integration proposal"},
+        {"title": "Integration pull request", "content": "product integration pull request"},
+    ]
+
+    assert all(_inferred_trl_ceiling(record) < 8 for record in records)
+
+
+def test_two_completed_system_sources_keep_trl9_confirmation():
+    records = [
+        {
+            "title": "Generally available product",
+            "content": "customer deployment with repeated production operation",
+        },
+        {
+            "title": "Official product release",
+            "content": "operational validation followed by commercial deployment",
+        },
+    ]
+    items = [
+        MarketEvidenceItem(
+            source_id=f"web:commercial{index}",
+            claim=record["content"],
+            stance="positive",
+            trl_level=_inferred_trl_ceiling(record),
+        )
+        for index, record in enumerate(records)
+    ]
+
+    assert _trl_estimate("TurboQuant", items, "")["level"] == 9
+
+
 def test_one_high_stage_source_records_possibility_without_promotion():
     item = MarketEvidenceItem(
         source_id="web:only", claim="official release", stance="positive", trl_level=8

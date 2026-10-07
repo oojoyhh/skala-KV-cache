@@ -2,7 +2,14 @@ import copy
 import re
 import unittest
 
-from agents.stakeholder import Evidence, StakeholderStructuredResponse, evaluate_stakeholders, stakeholder_node
+import config
+from agents.stakeholder import (
+    Evidence,
+    StakeholderStructuredResponse,
+    _stakeholder_queries,
+    evaluate_stakeholders,
+    stakeholder_node,
+)
 from tests.fixtures import fake_search, sample_state_after_research
 
 SECRET_MESSAGE = "Incorrect API key provided: sk-proj-SECRET"
@@ -100,6 +107,54 @@ class StakeholderNodeTests(unittest.TestCase):
         self.assertTrue(returned_ids)
         self.assertFalse(existing_ids & returned_ids)
 
+    def test_queries_cover_all_stakeholder_topics_without_extra_calls(self) -> None:
+        queries = _stakeholder_queries("TurboQuant", "")
+
+        self.assertEqual(len(queries), 2 * config.QUERIES_PER_STANCE)
+        self.assertEqual(sum(stance == "positive" for _, stance in queries), config.QUERIES_PER_STANCE)
+        self.assertEqual(sum(stance == "negative" for _, stance in queries), config.QUERIES_PER_STANCE)
+        query_text = "\n".join(query for query, _ in queries)
+        for topic in (
+            "competitors technology ecosystem",
+            "enterprise adopters developers deployment",
+            "investors funding industry response",
+        ):
+            self.assertIn(topic, query_text)
+
+    def test_empty_content_is_not_evidence_or_reference(self) -> None:
+        empty_source_ids: set[str] = set()
+
+        def mixed_content_search(query: str, stance: str, **kwargs):
+            valid, empty, *_ = fake_search(query, stance, **kwargs)
+            empty_source_ids.add(empty["source_id"])
+            return [valid, {**empty, "content": "  \t  "}]
+
+        update = stakeholder_node(self.state, search_fn=mixed_content_search, client=self.client)
+
+        evidence = [
+            item
+            for result in update["stakeholder_result"].values()
+            for group in ("competitors", "adopters_devs", "investors")
+            for item in result[group]
+        ]
+        self.assertTrue(evidence)
+        self.assertTrue(all(item["claim"].strip() for item in evidence))
+        self.assertFalse(empty_source_ids & {reference["source_id"] for reference in update["references"]})
+        self.assertEqual(update["node_result"]["status"], "success")
+
+    def test_all_empty_content_is_e1001_success(self) -> None:
+        def empty_content_search(query: str, stance: str, **kwargs):
+            return [{**record, "content": " "} for record in fake_search(query, stance, **kwargs)]
+
+        update = stakeholder_node(self.state, search_fn=empty_content_search, client=self.client)
+
+        self.assertEqual(update["node_result"]["status"], "success")
+        self.assertEqual(update["references"], [])
+        self.assertTrue(all(
+            result["summary"].startswith("[E-1001]")
+            for result in update["stakeholder_result"].values()
+        ))
+
     def test_retry_and_search_error_contracts_are_preserved(self) -> None:
         first, retry = [], []
         def track(calls):
@@ -116,8 +171,8 @@ class StakeholderNodeTests(unittest.TestCase):
         empty = stakeholder_node(self.state, search_fn=lambda *_a, **_k: [], client=self.client)
         failed = stakeholder_node(self.state, search_fn=lambda *_a, **_k: SearchFailureResult(), client=self.client)
         self.assertTrue(all(x["summary"].startswith("[E-1001]") for x in empty["stakeholder_result"].values()))
-        self.assertTrue(all(x["summary"].startswith("[E-1002]") for x in failed["stakeholder_result"].values()))
         self.assertEqual(empty["node_result"]["status"], "success")
+        self.assertEqual(set(failed), {"node_result"})
         self.assertEqual(failed["node_result"]["status"], "failed")
         self.assertIn("E-1002", failed["node_result"]["error"])
 
@@ -145,12 +200,19 @@ class StakeholderNodeTests(unittest.TestCase):
         result = update["stakeholder_result"]["TurboQuant"]
         self.assertEqual([(x["source_id"], x["stance"]) for x in [*result["competitors"], *result["adopters_devs"], *result["investors"]]], [("web:support", "positive"), ("web:limit", "negative"), ("web:neutral", "neutral")])
 
-    def test_llm_failure_still_returns_e1002(self) -> None:
+    def test_node_wide_llm_failure_preserves_existing_state_without_secret(self) -> None:
+        self.state["stakeholder_result"] = stakeholder_node(
+            self.state, search_fn=fake_search, client=self.client
+        )["stakeholder_result"]
+        before = copy.deepcopy(self.state)
+
         update = stakeholder_node(self.state, search_fn=fake_search, client=FailingClient())
-        self.assertTrue(all(x["summary"].startswith("[E-1002]") for x in update["stakeholder_result"].values()))
+
+        self.assertEqual(set(update), {"node_result"})
         self.assertEqual(update["node_result"]["status"], "failed")
         self.assertIn("E-1002", update["node_result"]["error"])
         self.assertNotIn(SECRET_MESSAGE, repr(update))
+        self.assertEqual(self.state, before)
 
     def test_one_technology_search_failure_keeps_node_success_without_secret(self) -> None:
         def search(query: str, stance: str, **kwargs):
@@ -183,6 +245,25 @@ class StakeholderNodeTests(unittest.TestCase):
         update = stakeholder_node(state, search_fn=fake_search, client=self.client)
 
         self.assertEqual(update["node_result"]["dispatch_id"], 0)
+
+    def test_missing_required_input_preserves_existing_state(self) -> None:
+        existing_result = stakeholder_node(
+            self.state, search_fn=fake_search, client=self.client
+        )["stakeholder_result"]
+        for key in ("tech_sw", "tech_hw"):
+            with self.subTest(key=key):
+                state = copy.deepcopy(self.state)
+                state["stakeholder_result"] = existing_result
+                del state[key]
+                before = copy.deepcopy(state)
+
+                update = stakeholder_node(state, search_fn=fake_search, client=self.client)
+
+                self.assertEqual(set(update), {"node_result"})
+                self.assertEqual(update["node_result"]["status"], "failed")
+                self.assertIn("E-1002", update["node_result"]["error"])
+                self.assertEqual(update["node_result"]["dispatch_id"], state["control"]["dispatch_id"])
+                self.assertEqual(state, before)
 
 
 if __name__ == "__main__":

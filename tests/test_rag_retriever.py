@@ -18,6 +18,7 @@ from rag.index import FaissIndex
 from rag.index import cache_fingerprint
 from rag.index import splitter_identity
 from rag.loader import PaperLoader
+from rag.loader import PaperLoadError
 from rag.retriever import paper_reference
 from rag.retriever import retrieve
 
@@ -238,10 +239,10 @@ def test_one_missing_paper_still_builds_index(tmp_path, monkeypatch) -> None:
     vectorstore.save_local.assert_called_once()
 
 
-def test_retrieve_returns_empty_when_all_papers_are_missing(
-    tmp_path, monkeypatch, caplog
+def test_retrieve_raises_when_all_papers_are_missing(
+    tmp_path, monkeypatch
 ) -> None:
-    """모든 PDF가 없으면 모델을 로드하지 않고 빈 결과를 반환한다."""
+    """모든 PDF가 없으면 모델을 로드하지 않고 PDF 오류를 전달한다."""
     monkeypatch.setattr(
         config,
         "PAPERS",
@@ -258,23 +259,87 @@ def test_retrieve_returns_empty_when_all_papers_are_missing(
     )
     monkeypatch.setattr("rag.retriever._INDEX", FaissIndex())
 
-    with caplog.at_level(logging.WARNING):
-        assert retrieve("KV cache") == []
+    with patch("rag.index.HuggingFaceEmbeddings") as load:
+        with pytest.raises(PaperLoadError, match="E-1003"):
+            retrieve("KV cache")
+    load.assert_not_called()
 
-    assert "[E-1003] RAG 검색 준비 실패" in caplog.text
 
-
-def test_retrieve_classifies_index_failure_as_e1002(monkeypatch, caplog) -> None:
-    """모델·인덱스 준비 실패는 PDF 오류와 구분해 E-1002로 기록한다."""
+def test_retrieve_raises_when_all_papers_are_corrupt(tmp_path, monkeypatch) -> None:
+    """실제 PDF 파서의 손상 파일 오류가 검색 호출자까지 전달된다."""
+    papers = {}
+    for tech, paper in config.PAPERS.items():
+        path = tmp_path / f"{tech}.pdf"
+        path.write_bytes(b"not a PDF")
+        papers[tech] = {**paper, "path": str(path)}
+    monkeypatch.setattr(config, "PAPERS", papers)
     index = Mock()
-    index.build_or_load.side_effect = RuntimeError("index unavailable")
+    index.build_or_load.side_effect = PaperLoader().load_documents
     monkeypatch.setattr("rag.retriever._INDEX", index)
 
-    with caplog.at_level(logging.WARNING):
-        assert retrieve("KV cache") == []
+    with pytest.raises(PaperLoadError, match="E-1003"):
+        retrieve("KV cache")
 
-    assert "[E-1002] RAG 검색 준비 실패" in caplog.text
-    assert "[E-1003] RAG 검색 준비 실패" not in caplog.text
+
+# ---------------------------------------------------------------------------
+# 1. 준비·검색 실패와 정상 근거 0건을 구분
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "error",
+    [
+        PaperLoadError("broken PDF"),
+        OSError("model unavailable"),
+        RuntimeError("index unavailable"),
+        ValueError("invalid index"),
+    ],
+)
+def test_retrieve_preserves_preparation_error(monkeypatch, error) -> None:
+    """실행 실패의 타입과 원래 예외 객체를 호출자에게 그대로 전달한다."""
+    index = Mock()
+    index.build_or_load.side_effect = error
+    monkeypatch.setattr("rag.retriever._INDEX", index)
+
+    with pytest.raises(type(error)) as caught:
+        retrieve("KV cache")
+    assert caught.value is error
+
+
+def test_retrieve_preserves_search_error(monkeypatch) -> None:
+    """인덱스 준비 후 검색에서 발생한 오류도 근거 부족으로 바꾸지 않는다."""
+    error = RuntimeError("search unavailable")
+    vectorstore = Mock()
+    vectorstore.as_retriever.return_value.invoke.side_effect = error
+    index = Mock()
+    index.build_or_load.return_value = ([], vectorstore)
+    monkeypatch.setattr("rag.retriever._INDEX", index)
+
+    with pytest.raises(RuntimeError) as caught:
+        retrieve("KV cache")
+    assert caught.value is error
+
+
+def test_retrieve_returns_empty_for_successful_search(monkeypatch) -> None:
+    """정상적으로 검색했지만 일치하는 청크가 없으면 빈 목록을 반환한다."""
+    vectorstore = Mock()
+    vectorstore.as_retriever.return_value.invoke.return_value = []
+    index = Mock()
+    index.build_or_load.return_value = ([], vectorstore)
+    monkeypatch.setattr("rag.retriever._INDEX", index)
+
+    assert retrieve("KV cache") == []
+    vectorstore.as_retriever.return_value.invoke.assert_called_once_with("KV cache")
+
+
+@pytest.mark.parametrize(
+    "query,k", [("", 5), ("   ", 5), ("KV cache", 0), ("KV cache", -1)]
+)
+def test_retrieve_skips_preparation_for_invalid_input(monkeypatch, query, k) -> None:
+    """빈 질의와 양수가 아닌 결과 수는 인덱스를 준비하지 않는다."""
+    index = Mock()
+    monkeypatch.setattr("rag.retriever._INDEX", index)
+
+    assert retrieve(query, k) == []
+    index.build_or_load.assert_not_called()
 
 
 def test_retrieve_converts_documents_to_chunk_contract(monkeypatch) -> None:

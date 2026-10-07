@@ -153,14 +153,6 @@ def _inferred_trl_ceiling(record: Mapping[str, Any]) -> int:
         text,
         r"\b(no|not|without|lack(?:s|ing|ed)?)\b.{0,35}\b(production|commercial|customer|deployed)\b",
     )
-    sustained_production = _contains(
-        text,
-        r"\b(sustained production|in production|production deployment|commercially deployed|"
-        r"cloud adoption|product integration|shipped to customers?)\b",
-    )
-    if sustained_production and not negated_high_stage:
-        return 9
-
     formal_release = _contains(
         text,
         r"\b(generally available|general availability|official product release|"
@@ -171,12 +163,30 @@ def _inferred_trl_ceiling(record: Mapping[str, Any]) -> int:
         r"\b(customer validation|customer deployment|customer use|operational validation|"
         r"operational use|production validation|deployed for customers?)\b",
     )
-    if formal_release and operational_validation and not negated_high_stage:
+    trl8_confirmed = formal_release and operational_validation and not negated_high_stage
+    integration_proposal = _contains(
+        text,
+        r"\b(?:product )?integration\b.{0,35}\b(?:pr|pull request|proposal|proposed|opened)\b|"
+        r"\b(?:pr|pull request|proposal|proposed|opened)\b.{0,35}\b(?:product )?integration\b",
+    )
+    sustained_production = _contains(
+        text,
+        r"\b(repeated (?:production )?(?:operation|use|deployment)|"
+        r"operating in production at scale|production use at scale|commercial deployment|"
+        r"commercial rollout|commercially deployed|shipped to customers?|"
+        r"commercial delivery|cloud adoption)\b",
+    )
+    product_integration = _contains(text, r"\bproduct integration\b") and not integration_proposal
+    if trl8_confirmed and (sustained_production or product_integration):
+        return 9
+    if trl8_confirmed:
         return 8
 
     pilot_stage = _contains(text, r"\b(pilot|public preview|private preview|beta)\b")
     operating_environment = _contains(
-        text, r"\b(operational environment|customer|cloud|data ?center|production environment)\b"
+        text,
+        r"\b(operational environment|customer|cloud|data ?center|production environment|"
+        r"in production)\b",
     )
     if pilot_stage and operating_environment and not negated_high_stage:
         return 7

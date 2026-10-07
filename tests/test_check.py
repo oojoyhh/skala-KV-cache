@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import unittest
+from unittest.mock import patch
 
 import config
 from agents.check import evaluate_sufficiency
@@ -107,6 +108,23 @@ class SufficiencyTests(unittest.TestCase):
             general_evidence(stances=["positive", "neutral"] * (config.MIN_EVIDENCE // 2)),
         )
         self.assertFalse(evaluate_sufficiency(state)["market"])
+
+    def test_negative_reason_uses_actual_count_when_minimum_is_higher(self) -> None:
+        state = self.state(True)
+        evidence = general_evidence(
+            config.MIN_EVIDENCE,
+            stances=["positive", "negative", "neutral", "neutral"],
+        )
+        original_minimum = config.MIN_NEGATIVE
+        with patch.object(config, "MIN_NEGATIVE", 2):
+            for tech in TECHS:
+                set_perspective_evidence(state, "market", tech, evidence)
+            result = evaluate_sufficiency(state)
+
+        self.assertFalse(result["market"])
+        self.assertIn("negative 1건", result["reasons"]["market"])
+        self.assertNotIn("negative 0건", result["reasons"]["market"])
+        self.assertEqual(config.MIN_NEGATIVE, original_minimum)
 
     def test_source_share_above_cap_is_insufficient(self) -> None:
         state = self.state(True)

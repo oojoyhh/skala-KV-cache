@@ -190,3 +190,43 @@ def test_error_message_does_not_leak_exception_text(tmp_path, monkeypatch):
     error = out["node_result"]["error"]
     assert out["node_result"]["status"] == "failed"
     assert "sk-proj" not in error and "API key" not in error and "LLMError" in error
+
+
+def test_merged_reference_is_counted_once_in_bias_rule():
+    """REFERENCE에서 한 줄로 합쳐지는 출처(www 유무 차이)를 품질 평가도 하나로 센다."""
+    references = [
+        {"source_id": "web:a", "kind": "web", "url": "https://tradingkey.com/x/", "title": "T",
+         "venue": "tradingkey.com", "author": "", "date": "", "used_by": ["market"], "stance": "positive"},
+        {"source_id": "web:b", "kind": "web", "url": "https://www.tradingkey.com/x", "title": "T",
+         "venue": "www.tradingkey.com", "author": "", "date": "", "used_by": ["market"], "stance": "negative"},
+    ]
+    state = {"references": references, "market_result": {"TurboQuant": {"adoption": [
+        {"claim": "지지", "source_id": "web:a", "stance": "positive"},
+        {"claim": "한계", "source_id": "web:b", "stance": "negative"}]}}}
+    num_to_doc = quality.number_to_docs({1: "tradingkey.com(n.d.). T. tradingkey.com, https://tradingkey.com/x/"},
+                                        references)
+    passed, reasons = quality.check_bias_control({"4-2": "TurboQuant 시장 평가 [1]."}, state, num_to_doc)
+    assert passed, reasons                  # 같은 문서라 "출처 1건만 인용" 미달이 아니다
+
+
+def test_llm_subheadings_do_not_split_sections():
+    """LLM이 본문에 쓴 '### 시장 규모'는 절로 보지 않는다 (PDF에는 안 보이지만 평가가 깨지던 문제)."""
+    md = ("# 보고서\n\n## 4. 관점별 평가\n\n### 4-2. 시장성\n도입 사례가 보고된다 [1].\n\n"
+          "### 시장 규모\n관련 시장은 성장 중이다 [2].\n\n## 5. 시사점\n관점이 갈린다 [1].\n")
+    sections = quality.split_sections(md)
+    assert "시장 규모" not in sections and "4-2" in sections
+    assert "관련 시장은 성장 중이다 [2]." in sections["4-2"]
+    assert sorted(quality.cited_numbers(sections["4-2"])) == [1, 2]
+
+
+def test_numbered_llm_subheadings_do_not_split_sections():
+    """LLM이 본문에 '### 1. 시장 규모'처럼 번호 소제목을 써도 1장으로 잡히면 안 된다."""
+    md = ("# 보고서\n\n## SUMMARY\n- 요약 [1]\n\n## 1. 분석 배경\n배경 [1].\n\n"
+          "## 4. 관점별 평가\n\n### 4-2. 시장성\n"
+          "### 1. 시장 규모\n관련 시장 [1].\n\n### 2. 채택 현황\n채택 사례 [2].\n\n"
+          "## 5. 시사점\n관점이 갈린다 [1].\n\n## REFERENCE\n[1] A(2026-01-01). T. S, https://a\n")
+    sections = quality.split_sections(md)
+    assert sections["1"] == "배경 [1]."                       # 1장은 LLM 소제목에 덮어써지지 않음
+    assert "관련 시장 [1]." in sections["4-2"] and "채택 사례 [2]." in sections["4-2"]
+    assert sorted(quality.cited_numbers(sections["4-2"])) == [1, 2]
+    assert set(sections) == {"SUMMARY", "1", "4", "4-2", "5", "REFERENCE"}

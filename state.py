@@ -1,6 +1,6 @@
 """공유 State 정의 — 모든 노드가 이 파일의 타입만 import해서 쓴다.
 
-기준: docs/AGENT_CONTRACT.md 2장 (Supervisor 계약 v2.2)
+기준: docs/AGENT_CONTRACT.md 2장 (Supervisor 계약 v2.2.3)
       기존 타입은 설계서 docs/RAG-Design_v5.md  D-1 State 설계를 그대로 따른다.
 변경은 5번(그래프 총괄)만 한다. 필드를 추가·변경해야 하면 직접 고치지 말고 요청할 것.
 
@@ -127,7 +127,7 @@ class Synthesis(TypedDict):            # 6. 평가 종합
 
 
 # ---------------------------------------------------------------------------
-# Supervisor 제어 (계약 v2.2 2장)
+# Supervisor 제어 (계약 v2.2.3 2장)
 # ---------------------------------------------------------------------------
 # supervisor가 고르는 하위 노드 7개
 NodeName = Literal["research", "market", "stakeholder", "domain", "synthesis", "report", "quality"]
@@ -264,6 +264,16 @@ def perspective_evidence(state: State, perspective: str, tech: TechName) -> list
         for ev in result.get(f, []):
             unique.setdefault((ev["source_id"], ev["claim"]), ev)
     return list(unique.values())
+
+
+def trl_evidence_count(state: State, tech: TechName) -> int:
+    """TRL 근거 개수 — 충분성(check)·품질 평가(quality)·보고서(report)가 함께 쓰는 단일 기준.
+
+    perspective_evidence가 (source_id, claim) 중복만 제거한 근거 수다. 같은 논문의 다른 페이지는 각각 센다
+    (팀 결정: 서로 다른 문서 기준보다 덜 엄격한 근거 개수 기준). config.MIN_TRL_EVIDENCE와 비교한다.
+    TRL "단계" 판정의 '서로 다른 출처 2개' 규칙(설계서 C-2, market)과는 별개다.
+    """
+    return len(perspective_evidence(state, "trl", tech))
 
 
 def retry_hint(state: State, perspective: str) -> str:

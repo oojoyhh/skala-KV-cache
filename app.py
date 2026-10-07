@@ -58,7 +58,18 @@ def main() -> None:
     }
     print(f"trace_id={trace_id}  LangSmith={'on (' + os.environ['LANGSMITH_PROJECT'] + ')' if tracing else 'off'}")
 
-    final, start = None, time.time()
+    start, holder = time.time(), {}
+    try:
+        _stream(graph, state, run_config, start, holder)
+    except Exception:
+        # 그래프가 예외로 멈춰도 LangSmith에서 찾을 수 있게 trace_id를 남긴다
+        print(f"\n[중단] 그래프 실행 중 예외 — trace_id={trace_id} (LangSmith metadata로 검색)")
+        raise
+    print_summary(holder["final"])
+
+
+def _stream(graph, state, run_config, start, holder: dict) -> None:
+    """노드별 진행 로그를 출력하고 마지막 State를 holder["final"]에 담는다."""
     for mode, chunk in graph.stream(state, config=run_config, stream_mode=["updates", "values"]):
         if mode == "updates":
             for node, update in chunk.items():
@@ -74,9 +85,7 @@ def main() -> None:
                 status = f" [{result['status']}{': ' + result['error'] if result.get('error') else ''}]" if result else ""
                 print(f"{elapsed} {node:<12} → {keys}{f' (+출처 {n_refs})' if n_refs else ''}{status}")
         else:
-            final = chunk
-
-    print_summary(final)
+            holder["final"] = chunk
 
 
 def print_summary(final: dict) -> None:
@@ -89,7 +98,7 @@ def print_summary(final: dict) -> None:
         q = "미실행(최신 보고서 미평가)"
     else:
         q = "통과" if quality["passed"] else f"미달({quality['action']})"
-    print(f"\n완료: {final.get('report_path')}  run_status={c['run_status']}  품질={q}  trace_id={c['trace_id']}")
+    print(f"\n완료: {final.get('report_path') or '보고서 없음'}  run_status={c['run_status']}  품질={q}  trace_id={c['trace_id']}")
     print(f"  재작업: 근거 부족 재조사 {sum(c['evidence_retry_counts'].values())}회, "
           f"품질 기반 재조사 {c['quality_research_count']}회, 보고서 재작성 {c['report_retry_count']}회, "
           f"실행 실패 재시도 {sum(c['exec_retry_counts'].values())}회")

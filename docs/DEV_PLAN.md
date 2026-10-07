@@ -1,7 +1,7 @@
 # DEV_PLAN — 개발 계약서 (v4, Agent 단계)
 
 > 설계서 `docs/RAG-Design_v5.md`(v6 작성 예정)의 "무엇을"을 코드로 옮길 때 지킬 **약속**만 적는다.
-> **Agent 단계(Supervisor 패턴)의 라우팅·State·권한·품질 평가·상한은 `docs/AGENT_CONTRACT.md`(공통 계약 v2.2.2)가 기준**이다. 이 문서는 계약을 반복하지 않고, 계약에 없는 개발 약속(도구 함수, 충분성 기준, 설정, 예외, Git)과 계약으로 가는 안내만 둔다. 결정 배경은 `docs/AGENT_DECISIONS.md`.
+> **Agent 단계(Supervisor 패턴)의 라우팅·State·권한·품질 평가·상한은 `docs/AGENT_CONTRACT.md`(공통 계약 v2.2.3)가 기준**이다. 이 문서는 계약을 반복하지 않고, 계약에 없는 개발 약속(도구 함수, 충분성 기준, 설정, 예외, Git)과 계약으로 가는 안내만 둔다. 결정 배경은 `docs/AGENT_DECISIONS.md`.
 > 이 문서와 계약서·`state.py`가 팀 AI 도구의 공통 맥락이다. AI에게 작업을 맡길 때 "docs/AGENT_CONTRACT.md·docs/DEV_PLAN.md·state.py에 맞춰 구현"이라고 지시한다.
 > 상태: **v4** — Agent 과제(Supervisor) 반영. 절 번호는 코드 주석이 참조하므로 v3과 같게 유지한다. 문서 담당: 5번 윤중우
 
@@ -141,7 +141,7 @@ StructuredClient(role="judge")                    # .invoke(prompt, response_mod
   - 관점별로 **두 기술 각각** 충족해야 True
   - Evidence ≥ `MIN_EVIDENCE`(4), 지지(positive) ≥ 1 · 한계·반론(negative) ≥ 1 — stance 정의는 설계서 v5 D-1 / `state.py` 주석
   - 한 source_id가 관점 근거의 `SAME_SOURCE_CAP`(50%) 초과 시 불충분
-  - TRL: `trl_result[tech]["evidence"]` ≥ `MIN_TRL_EVIDENCE`(2)
+  - TRL: `state.trl_evidence_count(state, tech)` ≥ `MIN_TRL_EVIDENCE`(2). **근거 개수 기준**(같은 논문의 다른 페이지도 각각 셈) — 충분성·품질 평가·보고서가 이 함수 하나로 센다. TRL **단계** 판정의 "서로 다른 출처 2개" 규칙(설계서 C-2, market)과는 별개다
 - `reasons[관점]`에는 **무엇이 부족한지** 한 줄 (예: `"InfiniGen: 반론 근거 미확인(negative 0건)"`) → 다음 재조사의 쿼리 힌트(`retry_hint`). 품질 기반 재조사 때는 supervisor가 `"품질 평가: ..."` 사유를 같은 자리에 넣는다(계약 1-4).
 - **반대 근거를 만들어내지 않는다.** 재조사 후에도 한계·반론 근거가 없으면 그대로 두고, 평가 종합이 `reasons`를 한계점에 "반론 근거 미확인"으로 기록한다 (E-1005와 같은 경로).
 
@@ -162,7 +162,7 @@ StructuredClient(role="judge")                    # .invoke(prompt, response_mod
 | `sample_state_after_eval(sufficient=True/False)` | 4개 관점 결과까지 채운 State (False면 InfiniGen 이해관계자 한계·반론 근거 0건 → 불충분) | 4번 check, 5번 supervisor·synthesis, 6번 report·quality |
 | `fake_search(query, stance, max_results, used_by)` | Tavily 없이 `search_web`과 같은 형태 반환 | 3·4번 (`search_fn=fake_search` 주입) |
 | `expected_sufficiency(state)` | §3-3 기준으로 계산한 정답 SufficiencyCheck | 4번 check 결과 비교 |
-| `DUMMY_NODES` | `python app.py --dummy` 가짜 노드. 계약 v2.2.1: 7개 노드 모두 `node_result` 반환, report는 `report_version`, quality는 `action`·`target_node` 포함 | 5번 graph, 1번 test_supervisor |
+| `DUMMY_NODES` | `python app.py --dummy` 가짜 노드. 계약 v2.2.3: 7개 노드 모두 `node_result` 반환, report는 `report_version`, quality는 `action`·`target_node` 포함 | 5번 graph, 1번 test_supervisor |
 
 ```bash
 python -c "from tests.fixtures import sample_state_after_research, fake_search; from agents.market import market_node; print(market_node(sample_state_after_research(), search_fn=fake_search))"
