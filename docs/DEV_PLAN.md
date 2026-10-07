@@ -1,7 +1,7 @@
 # DEV_PLAN — 개발 계약서 (v4, Agent 단계)
 
 > 설계서 `docs/RAG-Design_v5.md`(v6 작성 예정)의 "무엇을"을 코드로 옮길 때 지킬 **약속**만 적는다.
-> **Agent 단계(Supervisor 패턴)의 라우팅·State·권한·품질 평가·상한은 `docs/AGENT_CONTRACT.md`(공통 계약 v2.2.2)가 기준**이다. 이 문서는 계약을 반복하지 않고, 계약에 없는 개발 약속(도구 함수, 충분성 기준, 설정, 예외, Git)과 계약으로 가는 안내만 둔다. 결정 배경은 `docs/AGENT_DECISIONS.md`.
+> **Agent 단계(Supervisor 패턴)의 라우팅·State·권한·품질 평가·상한은 `docs/AGENT_CONTRACT.md`(공통 계약 v2.2.3)가 기준**이다. 이 문서는 계약을 반복하지 않고, 계약에 없는 개발 약속(도구 함수, 충분성 기준, 설정, 예외, Git)과 계약으로 가는 안내만 둔다. 결정 배경은 `docs/AGENT_DECISIONS.md`.
 > 이 문서와 계약서·`state.py`가 팀 AI 도구의 공통 맥락이다. AI에게 작업을 맡길 때 "docs/AGENT_CONTRACT.md·docs/DEV_PLAN.md·state.py에 맞춰 구현"이라고 지시한다.
 > 상태: **v4** — Agent 과제(Supervisor) 반영. 절 번호는 코드 주석이 참조하므로 v3과 같게 유지한다. 문서 담당: 5번 윤중우
 
@@ -162,7 +162,7 @@ StructuredClient(role="judge")                    # .invoke(prompt, response_mod
 | `sample_state_after_eval(sufficient=True/False)` | 4개 관점 결과까지 채운 State (False면 InfiniGen 이해관계자 한계·반론 근거 0건 → 불충분) | 4번 check, 5번 supervisor·synthesis, 6번 report·quality |
 | `fake_search(query, stance, max_results, used_by)` | Tavily 없이 `search_web`과 같은 형태 반환 | 3·4번 (`search_fn=fake_search` 주입) |
 | `expected_sufficiency(state)` | §3-3 기준으로 계산한 정답 SufficiencyCheck | 4번 check 결과 비교 |
-| `DUMMY_NODES` | `python app.py --dummy` 가짜 노드. 계약 v2.2.1: 7개 노드 모두 `node_result` 반환, report는 `report_version`, quality는 `action`·`target_node` 포함 | 5번 graph, 1번 test_supervisor |
+| `DUMMY_NODES` | `python app.py --dummy` 가짜 노드. 계약 v2.2.3: 7개 노드 모두 `node_result` 반환, report는 `report_version`, quality는 `action`·`target_node` 포함 | 5번 graph, 1번 test_supervisor |
 
 ```bash
 python -c "from tests.fixtures import sample_state_after_research, fake_search; from agents.market import market_node; print(market_node(sample_state_after_research(), search_fn=fake_search))"

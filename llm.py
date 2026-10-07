@@ -37,14 +37,14 @@ def generate(prompt: str, role: Role = "generator") -> str:
     try:
         return get_llm(role).invoke(prompt).content
     except Exception as exc:  # noqa: BLE001 — 외부 API 오류를 한 종류로 통일
-        raise LLMError(f"[E-1002] LLM 호출 실패({role}): {exc}") from exc
+        raise LLMError(f"[E-1002] LLM 호출 실패({role}): {type(exc).__name__}") from exc   # 공급자 원문은 싣지 않음(비밀값)
 
 
 def structured(prompt: str, response_model: type[M], role: Role = "judge") -> M:
     try:
         return get_llm(role).with_structured_output(response_model).invoke(prompt)
     except Exception as exc:  # noqa: BLE001
-        raise LLMError(f"[E-1002] 구조화 출력 실패({role}, {response_model.__name__}): {exc}") from exc
+        raise LLMError(f"[E-1002] 구조화 출력 실패({role}, {response_model.__name__}): {type(exc).__name__}") from exc
 
 
 class StructuredClient:

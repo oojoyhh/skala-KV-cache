@@ -1,6 +1,6 @@
 """공유 State 정의 — 모든 노드가 이 파일의 타입만 import해서 쓴다.
 
-기준: docs/AGENT_CONTRACT.md 2장 (Supervisor 계약 v2.2)
+기준: docs/AGENT_CONTRACT.md 2장 (Supervisor 계약 v2.2.3)
       기존 타입은 설계서 docs/RAG-Design_v5.md  D-1 State 설계를 그대로 따른다.
 변경은 5번(그래프 총괄)만 한다. 필드를 추가·변경해야 하면 직접 고치지 말고 요청할 것.
 
@@ -127,7 +127,7 @@ class Synthesis(TypedDict):            # 6. 평가 종합
 
 
 # ---------------------------------------------------------------------------
-# Supervisor 제어 (계약 v2.2 2장)
+# Supervisor 제어 (계약 v2.2.3 2장)
 # ---------------------------------------------------------------------------
 # supervisor가 고르는 하위 노드 7개
 NodeName = Literal["research", "market", "stakeholder", "domain", "synthesis", "report", "quality"]
