@@ -19,6 +19,7 @@ from state import (
     TECHS,
     Evidence,
     MarketResult,
+    NodeResult,
     Reference,
     State,
     Stance,
@@ -542,26 +543,37 @@ def _base_error_prefix(
     error_count: int,
     llm_failed: bool,
     retrying: bool,
-    retry_count: int,
+    evidence_retry_count: int,
 ) -> str:
     if llm_failed or error_count:
         return "[E-1002] 검색 또는 LLM 호출 장애로 일부 근거를 확인하지 못함."
     if not records:
-        if retrying and retry_count >= config.MAX_RETRY:
+        if retrying and evidence_retry_count >= config.MAX_AGENT_RETRY:
             return "[E-1005] 재조사 상한에 도달했으며 검색 결과를 확보하지 못함."
         if empty_count:
             return "[E-1001] 검색 결과 없음."
     return ""
 
 
-def market_node(
+def _node_result(
+    state: State,
+    status: Literal["success", "failed"],
+    error: str = "",
+) -> NodeResult:
+    return {
+        "node": "market",
+        "dispatch_id": state["control"]["dispatch_id"],
+        "status": status,
+        "error": error,
+    }
+
+
+def _market_payload(
     state: State,
     *,
     search_fn: SearchFunction | None = None,
     structured_client: Any = None,
 ) -> dict:
-    """``trl_result``·``market_result``·이번 실행에서 사용한 ``references``만 반환한다."""
-
     technologies = _resolve_technologies(state)
     active_search = search_fn or search_web
     client = structured_client or StructuredClient()
@@ -580,6 +592,29 @@ def market_node(
         items_by_tech[technology] = items
         status[technology] = (empty_count, error_count, llm_failed)
 
+    search_attempts = sum(
+        len(_query_specs(technology, trl_reason, market_reason))
+        for technology in technologies
+    )
+    if sum(item[1] for item in status.values()) == search_attempts:
+        return {
+            "node_result": _node_result(
+                state, "failed", "E-1002 시장/TRL 외부 호출 실패"
+            )
+        }
+
+    classified_technologies = [
+        technology for technology in technologies if records_by_tech[technology]
+    ]
+    if classified_technologies and all(
+        status[technology][2] for technology in classified_technologies
+    ):
+        return {
+            "node_result": _node_result(
+                state, "failed", "E-1002 시장/TRL 분류 호출 실패"
+            )
+        }
+
     successful = [technology for technology in technologies if items_by_tech[technology]]
     one_tech_only = len(successful) == 1
     trl_result: dict[TechName, TRLEstimate] = {}
@@ -594,7 +629,7 @@ def market_node(
             error_count,
             llm_failed,
             bool(trl_reason or market_reason),
-            state.get("retry_count", 0),
+            state["control"]["evidence_retry_counts"]["market"],
         )
         if one_tech_only:
             prefix = "[E-1004] 한 기술만 근거를 확보함. " + prefix
@@ -622,4 +657,27 @@ def market_node(
         "trl_result": trl_result,
         "market_result": market_result,
         "references": list(references.values()),
+        "node_result": _node_result(state, "success"),
     }
+
+
+def market_node(
+    state: State,
+    *,
+    search_fn: SearchFunction | None = None,
+    structured_client: Any = None,
+) -> dict:
+    """Market/TRL payload와 Supervisor가 검증할 ``node_result``를 반환한다."""
+
+    try:
+        return _market_payload(
+            state,
+            search_fn=search_fn,
+            structured_client=structured_client,
+        )
+    except Exception:  # noqa: BLE001 - node boundary must not stop the graph
+        return {
+            "node_result": _node_result(
+                state, "failed", "E-1002 시장/TRL 실행 실패"
+            )
+        }
