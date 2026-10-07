@@ -1,6 +1,6 @@
 """공유 State 정의 — 모든 노드가 이 파일의 타입만 import해서 쓴다.
 
-기준: docs/AGENT_CONTRACT.md 2장 (Supervisor 계약 v2.1)
+기준: docs/AGENT_CONTRACT.md 2장 (Supervisor 계약 v2.2)
       기존 타입은 설계서 docs/RAG-Design_v5.md  D-1 State 설계를 그대로 따른다.
 변경은 5번(그래프 총괄)만 한다. 필드를 추가·변경해야 하면 직접 고치지 말고 요청할 것.
 
@@ -127,7 +127,7 @@ class Synthesis(TypedDict):            # 6. 평가 종합
 
 
 # ---------------------------------------------------------------------------
-# Supervisor 제어 (계약 v2.1 2장)
+# Supervisor 제어 (계약 v2.2 2장)
 # ---------------------------------------------------------------------------
 # supervisor가 고르는 하위 노드 7개
 NodeName = Literal["research", "market", "stakeholder", "domain", "synthesis", "report", "quality"]
@@ -161,6 +161,8 @@ class QualityResult(TypedDict):          # quality 노드 산출물
     passed: bool                         # 네 항목 passed and page_limit_passed and required_sections_passed
     feedback: list[str]                  # report 재작성 입력
     evaluated_report_version: int        # 평가한 report_version
+    action: Literal["pass", "rewrite", "research"]  # 품질 노드의 권고 (다음 노드는 supervisor가 정함)
+    target_node: str                     # action == "research"일 때 market | stakeholder | domain, 그 외 ""
 
 
 class ControlState(TypedDict):           # supervisor만 수정
@@ -175,6 +177,8 @@ class ControlState(TypedDict):           # supervisor만 수정
     node_errors: dict[str, str]          # 노드별 마지막 오류
     last_error: str
     finalize_tried: list[str]            # 마무리 모드에서 시도한 노드
+    quality_research_count: int          # 품질 평가 기반 재조사 횟수 (실행 전체)
+    stale: list[str]                     # 산출물이 있어도 다시 만들어야 하는 노드 (synthesis·report)
     trace_id: str                        # LangSmith metadata.trace_id와 같은 값
     run_status: Literal["running", "completed", "exhausted"]
 
@@ -229,6 +233,8 @@ def make_initial_state() -> State:
             "node_errors": {},
             "last_error": "",
             "finalize_tried": [],
+            "quality_research_count": 0,
+            "stale": [],
             "trace_id": uuid.uuid4().hex,
             "run_status": "running",
         },

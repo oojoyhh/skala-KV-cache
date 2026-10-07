@@ -44,7 +44,8 @@ SAME_SOURCE_CAP = 0.5    # 한 source_id가 관점 근거에서 차지할 수 �
 MAX_EXEC_RETRY = 1       # 노드 실행 실패 시 재시도 횟수 (7개 노드 공통)
 MAX_AGENT_RETRY = 2      # 관점 노드 하나의 근거 부족 재조사 횟수
 MAX_REPORT_RETRY = 1     # 품질 미달 시 보고서 재작성 횟수
-MAX_TOTAL_STEPS = 20     # 하위 노드 실행 횟수 안전장치. 도달하면 마무리 모드 (품질 통과 조건 아님)
+MAX_QUALITY_RESEARCH = 1 # 품질 평가 기반 재조사 횟수 (실행 전체, 근거 부족 재조사와 별도)
+MAX_TOTAL_STEPS = 24     # 하위 노드 실행 횟수 안전장치. 도달하면 마무리 모드 (품질 통과 조건 아님)
 MAX_REPORT_PAGES = 10    # 보고서 최대 쪽수
 RECURSION_LIMIT = 2 * (MAX_TOTAL_STEPS + 3) + 10   # LangGraph recursion_limit (supervisor 방문 포함)
 
@@ -107,4 +108,4 @@ REPORT_PATH = os.path.join(OUTPUT_DIR, REPORT_FILENAME)
 FONT_DIR = "assets/fonts"                  # 한글 폰트 파일 (6번)
 
 # 필수 환경변수 — app.py 시작 시 확인 (E-1002)
-REQUIRED_ENV = ("OPENAI_API_KEY", "TAVILY_API_KEY")
+REQUIRED_ENV = ("OPENAI_API_KEY", "TAVILY_API_KEY", "LANGSMITH_API_KEY")
