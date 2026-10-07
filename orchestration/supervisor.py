@@ -16,6 +16,7 @@ import config
 from agents.check import evaluate_sufficiency
 from state import (
     EVIDENCE_RETRY_NODES,
+    PERSPECTIVE_NODE,
     PERSPECTIVES,
     TECHS,
     ControlState,
@@ -26,8 +27,6 @@ from state import (
 
 END = "END"  # graph.py가 langgraph END로 연결한다
 
-# 관점 → 재실행할 노드 (TRL과 시장성은 같은 market 노드가 만든다)
-PERSPECTIVE_NODE = {"trl": "market", "market": "market", "stakeholder": "stakeholder", "domain": "domain"}
 # 관점 후보의 근거 개수가 같을 때만 쓰는 순서 (워크플로 순서가 아니라 재현성용 동점 처리)
 TIE_BREAK_ORDER = EVIDENCE_RETRY_NODES
 # 실행 재시도 상한에 닿으면 종료하는 마무리 노드
