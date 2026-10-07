@@ -1,6 +1,6 @@
 """Supervisor — 다음에 실행할 하위 노드를 State 규칙으로 고른다 (5번 담당).
 
-기준: docs/AGENT_CONTRACT.md v2.2 — 1장 (라우팅), 2장 (ControlState), 4-1 (품질 조치 권고), 5장 (상한)
+기준: docs/AGENT_CONTRACT.md v2.2.3 — 1장 (라우팅), 2장 (ControlState), 4-1 (품질 조치 권고), 5장 (상한)
 
 - 하위 노드는 모두 실행 후 supervisor로 돌아오고, supervisor만 다음 노드를 정한다.
 - 라우팅은 규칙 기반이다. 같은 State면 같은 경로가 나온다 (LLM 미사용).
@@ -80,7 +80,8 @@ def reflect_last_run(state: State, control: ControlState) -> str | None:
     if node in ("", END):
         return None
     result = state.get("node_result")
-    if result and result.get("node") == node and result.get("dispatch_id") == control["dispatch_id"]:
+    if (result and result.get("node") == node and result.get("dispatch_id") == control["dispatch_id"]
+            and result.get("status") in ("success", "failed")):    # 계약 밖 status는 반환 누락과 같이 처리
         status, error = result["status"], result.get("error", "")
     else:
         status, error = "failed", f"E-1002 node_result 누락: {node}"
@@ -199,6 +200,8 @@ def decide(state: State) -> tuple[str, ControlState, SufficiencyCheck | None]:
     # 마무리 모드
     if control["step_count"] >= config.MAX_TOTAL_STEPS:
         control["run_status"] = "exhausted"
+        # 직전 재조사·품질 힌트 이후 State가 바뀌었을 수 있으므로 충분성을 다시 평가해 synthesis가 최신 사유를 읽게 한다
+        sufficiency = evaluate_sufficiency(state)
         node, reason = _finalize(state, control, last)
         if node != END:
             control["finalize_tried"].append(node)

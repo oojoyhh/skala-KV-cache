@@ -206,7 +206,7 @@ def test_graph_real_synthesis_reaches_report(always_insufficient):
         overrides["stakeholder"] = lambda state: {
             **sample_stakeholder_output("InfiniGen"),
             "node_result": {"node": "stakeholder", "dispatch_id": state["control"]["dispatch_id"], "status": "success", "error": ""}}
-    final = build_graph(dummy=True, overrides=overrides).invoke(make_initial_state())
+    final = build_graph(dummy=True, overrides=overrides).invoke(make_initial_state(), config={"recursion_limit": config.RECURSION_LIMIT})
     assert final["report_path"] == "test-report-no-file.pdf"
     assert len(client.prompts) == 1
     control = final["control"]
@@ -347,7 +347,7 @@ def test_graph_continues_to_report_when_synthesis_keeps_failing():
                                  "node_result": {"node": "report", "dispatch_id": state["control"]["dispatch_id"],
                                                  "status": "success", "error": ""}},
     }
-    final = build_graph(dummy=True, overrides=overrides).invoke(make_initial_state())
+    final = build_graph(dummy=True, overrides=overrides).invoke(make_initial_state(), config={"recursion_limit": config.RECURSION_LIMIT})
     control = final["control"]
     assert control["exec_retry_counts"]["synthesis"] == config.MAX_EXEC_RETRY
     assert control["node_status"]["synthesis"] == "skipped"
@@ -380,3 +380,59 @@ def test_env_file_search_starts_from_repo_not_cwd(tmp_path, monkeypatch):
     found = config._find_env_file()
     repo = os.path.dirname(os.path.abspath(config.__file__))
     assert found is None or repo.startswith(os.path.dirname(found))
+
+
+def test_finalize_mode_reevaluates_sufficiency_for_synthesis():
+    """마무리 모드에서도 충분성을 다시 평가해, synthesis가 이미 해소된 부족 사유를 한계로 적지 않게 한다."""
+    from agents.check import evaluate_sufficiency
+    from orchestration.supervisor import decide
+
+    state = sample_state_after_eval(True)                     # 실제 근거는 충분
+    state["sufficiency"] = {"trl": True, "market": True, "stakeholder": False, "domain": True,
+                            "reasons": {"stakeholder": "InfiniGen: 반론 근거 미확인(negative 0건)"}}   # 지난 판정
+    control = state["control"]
+    control["node_status"] = {n: "success" for n in ("research", "market", "stakeholder", "domain")}
+    control["step_count"] = config.MAX_TOTAL_STEPS - 1
+    control["next_node"] = "stakeholder"
+    control["dispatch_id"] = control["step_count"]
+    state["node_result"] = {"node": "stakeholder", "dispatch_id": control["dispatch_id"], "status": "success", "error": ""}
+    node, _, sufficiency = decide(state)
+    assert node == "synthesis"
+    assert sufficiency == evaluate_sufficiency(state) and sufficiency["stakeholder"] is True
+
+
+def test_node_result_with_unknown_status_counts_as_missing():
+    from orchestration.supervisor import decide
+
+    state = make_initial_state()
+    control = state["control"]
+    control["next_node"], control["dispatch_id"] = "research", 0
+    state["node_result"] = {"node": "research", "dispatch_id": 0, "status": "ok", "error": ""}
+    _, control_after, _ = decide(state)
+    assert control_after["node_status"]["research"] == "failed"
+    assert control_after["node_errors"]["research"].startswith("E-1002 node_result 누락")
+
+
+def test_llm_error_message_has_no_provider_text(monkeypatch):
+    class Boom:
+        def invoke(self, prompt):
+            raise RuntimeError("Incorrect API key provided: sk-proj-FAKE1234")
+    monkeypatch.setattr(llm, "get_llm", lambda role="generator": Boom())
+    with pytest.raises(llm.LLMError) as err:
+        llm.generate("x")
+    assert "sk-proj" not in str(err.value) and "RuntimeError" in str(err.value)
+
+
+def test_trl_evidence_count_matches_sufficiency_rule():
+    """TRL 근거 개수는 근거 단위(같은 논문의 다른 페이지도 각각)로 세고, 충분성 판정과 같은 값을 쓴다."""
+    import state as st
+    from agents.check import evaluate_sufficiency
+
+    s = sample_state_after_eval(True)
+    for tech in st.TECHS:
+        s["trl_result"][tech]["evidence"] = [
+            {"claim": "p1 주장", "source_id": "arxiv:2504.19874#p1", "stance": "positive"},
+            {"claim": "p7 주장", "source_id": "arxiv:2504.19874#p7", "stance": "positive"},
+        ]
+        assert st.trl_evidence_count(s, tech) == 2
+    assert evaluate_sufficiency(s)["trl"] is True

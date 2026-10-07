@@ -117,7 +117,7 @@ RETRIEVAL_EVAL_SET = "eval/retrieval_qa.json"   # 한국어 질문 → 정답 �
 # 출력 (노션 가이드 Deliverables 파일명 규칙)
 # ---------------------------------------------------------------------------
 OUTPUT_DIR = "outputs"
-REPORT_FILENAME = "RAG-Output_판교_8반_김명하+김연주+김효주+안소유+윤중우+한석휘.pdf"
+REPORT_FILENAME = "Agent_판교_8반_김명하+김연주+김효주+안소유+윤중우+한석휘.pdf"   # Agent 과제 보고서 (README와 동일)
 REPORT_PATH = os.path.join(OUTPUT_DIR, REPORT_FILENAME)
 FONT_DIR = "assets/fonts"                  # 한글 폰트 파일 (6번)
 
