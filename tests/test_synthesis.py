@@ -354,3 +354,20 @@ def test_graph_continues_to_report_when_synthesis_keeps_failing():
     assert control["node_errors"]["synthesis"].startswith("E-1002")
     assert final["report_path"] == "test-report-no-file.pdf"
     assert any("E-1002" in t for t in final["synthesis"]["limitations"])
+
+
+def test_unexpected_client_error_is_contained_without_raw_text():
+    """예상 밖 예외도 밖으로 던지지 않고 failed(E-1002) + 대체 종합을 반환한다 (계약 3장)."""
+    state = sample_state_after_eval(True)
+    secret = "Incorrect API key provided: sk-proj-FAKE1234"
+    result = synthesis_node(state, client=FakeClient(RuntimeError(secret)))
+    assert result["node_result"]["status"] == "failed"
+    assert result["node_result"]["error"] == "E-1002 평가 종합 실패 (RuntimeError)"
+    assert result["synthesis"]["agreements"] == result["synthesis"]["conflicts"] == []
+    assert any(t.startswith("[E-1002]") for t in result["synthesis"]["limitations"])
+    assert secret not in json.dumps(result, ensure_ascii=False)
+
+
+def test_load_prompt_does_not_depend_on_cwd(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert llm.load_prompt("synthesis")
