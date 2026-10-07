@@ -37,7 +37,7 @@ from output.citations import (  # noqa: F401 — 외부에서 agents.report 경�
     _published_date,
 )
 from output.renderer import render_pdf, to_markdown
-from state import PERSPECTIVES, TECHS, State, perspective_evidence
+from state import PERSPECTIVES, TECHS, State, perspective_evidence, trl_evidence_count
 
 TITLE = "KV cache 최적화 기술 다관점 평가 보고서"
 TRL_NOTE = ("본 TRL은 공개 정보 기반 추정이며, KV cache 기술은 논문 발표 시점과 실제 채택 간 시차가 있어 "
@@ -237,14 +237,14 @@ def _by_tech(state, key, drop=()):
 
 
 def _trl_view(s) -> dict:
-    """TRL 근거가 판정 규칙(서로 다른 출처 config.MIN_TRL_EVIDENCE개)에 못 미치면 숫자 단계를 넘기지 않는다.
-    출처가 부족하다는 것은 '판정 근거 부족'이지 'TRL 1'이라는 증거가 아니기 때문."""
+    """TRL 근거가 판정 규칙(config.MIN_TRL_EVIDENCE건)에 못 미치면 숫자 단계를 넘기지 않는다.
+    근거가 부족하다는 것은 '판정 근거 부족'이지 'TRL 1'이라는 증거가 아니기 때문."""
     out = {}
     for tech, r in _by_tech(s, "trl_result").items():
-        n = len({_doc_id(e["source_id"]) for e in r.get("evidence", [])})   # 같은 논문의 여러 쪽은 1건
+        n = trl_evidence_count(s, tech)   # 팀 결정 D11: 충분성·품질·보고서가 같은 공용 함수를 쓴다
         r = dict(r)
         if n < config.MIN_TRL_EVIDENCE:
-            r["level"] = f"확정 곤란 (서로 다른 출처 {n}건 < {config.MIN_TRL_EVIDENCE}건)"
+            r["level"] = f"확정 곤란 (TRL 근거 {n}건 < {config.MIN_TRL_EVIDENCE}건)"
             r.pop("rationale", None)   # "TRL 1로 보수적 추정" 같은 문장이 숫자를 되살리지 않게
         out[tech] = r
     return out

@@ -236,7 +236,8 @@ def test_single_tech_sentence_keeps_only_its_own_citations():
         "InfiniGen은 전송 부담이 보고된다 [2]. 두 기술 모두 TurboQuant·InfiniGen 근거가 있다 [1][2].")
 
 
-def test_trl_without_enough_sources_is_not_a_number():
+def test_trl_without_enough_evidence_is_not_a_number():
+    """팀 결정 D11: TRL 근거는 개수 기준. 기준 미달이면 숫자 단계를 쓰지 않는다."""
     state = sample_state_after_eval(True)
     state["trl_result"]["TurboQuant"]["evidence"] = state["trl_result"]["TurboQuant"]["evidence"][:1]
     state["trl_result"]["TurboQuant"]["level"] = 1
@@ -245,7 +246,7 @@ def test_trl_without_enough_sources_is_not_a_number():
     blocks = build_blocks(state, lambda p: prompts.append(p) or "본문")
     trl_prompt = next(p for p in prompts if "## 챕터: 4-1" in p)
     assert "확정 곤란" in trl_prompt and "TRL 1로 보수적" not in trl_prompt
-    assert ("fixed", "판정 결과: TurboQuant 확정 곤란 (서로 다른 출처 1건 < 2건) / InfiniGen TRL 4") in blocks
+    assert ("fixed", "판정 결과: TurboQuant 확정 곤란 (TRL 근거 1건 < 2건) / InfiniGen TRL 4") in blocks
 
 
 def test_recommendation_sentences_are_removed():

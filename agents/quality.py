@@ -21,7 +21,7 @@ import config
 import llm
 from agents.report import RECOMMEND
 from output.citations import CITE_GROUP, CITE_ITEM, _doc_id, _same_doc_key
-from state import PERSPECTIVE_FIELDS, PERSPECTIVE_NODE, TECHS, perspective_evidence
+from state import PERSPECTIVE_FIELDS, PERSPECTIVE_NODE, TECHS, perspective_evidence, trl_evidence_count
 
 PERSPECTIVE_SECTIONS = {            # 보고서 절 → State 관점 키
     "4-1": "trl", "4-2": "market", "4-3": "stakeholder", "4-4": "domain",
@@ -194,9 +194,10 @@ def state_gaps(state: dict) -> dict[str, tuple[int, str]]:
         for tech in TECHS:
             evidence = perspective_evidence(state, perspective, tech)
             total += len(evidence)
-            if perspective == "trl":   # TRL은 서로 다른 문서 수만 본다 (supervisor의 충분성 기준과 동일)
-                if len({keys.get(_doc_id(e["source_id"]), _doc_id(e["source_id"])) for e in evidence}) < config.MIN_TRL_EVIDENCE:
-                    problems.append(f"{tech} 서로 다른 출처 {config.MIN_TRL_EVIDENCE}건 미만")
+            if perspective == "trl":   # 팀 결정 D11: 충분성·품질·보고서가 같은 공용 함수를 쓴다
+                count = trl_evidence_count(state, tech)
+                if count < config.MIN_TRL_EVIDENCE:
+                    problems.append(f"{tech} TRL 근거 {count}건 < {config.MIN_TRL_EVIDENCE}건")
                 continue
             if not evidence:
                 problems.append(f"{tech} 근거 없음")
