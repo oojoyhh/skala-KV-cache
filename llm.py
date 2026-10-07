@@ -9,6 +9,7 @@
 """
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal, TypeVar
 
 from pydantic import BaseModel
@@ -16,6 +17,7 @@ from pydantic import BaseModel
 import config
 
 Role = Literal["generator", "judge"]
+PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
 M = TypeVar("M", bound=BaseModel)
 
 
@@ -57,5 +59,5 @@ class StructuredClient:
 
 def load_prompt(name: str) -> str:
     """prompts/<name>.md 를 읽는다 (DEV_PLAN §5)."""
-    with open(f"prompts/{name}.md", encoding="utf-8") as f:
+    with open(PROMPT_DIR / f"{name}.md", encoding="utf-8") as f:   # 실행 위치와 무관하게 저장소 기준
         return f.read()
