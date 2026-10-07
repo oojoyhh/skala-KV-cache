@@ -2,7 +2,15 @@ import copy
 import re
 import unittest
 
-from agents.domain import DomainStructuredResponse, Evidence, build_domain_prompt, domain_node, evaluate_domain
+import config
+from agents.domain import (
+    DomainStructuredResponse,
+    Evidence,
+    _domain_queries,
+    build_domain_prompt,
+    domain_node,
+    evaluate_domain,
+)
 from tests.fixtures import fake_search, sample_state_after_research
 
 SECRET_MESSAGE = "Incorrect API key provided: sk-proj-SECRET"
@@ -89,6 +97,55 @@ class DomainNodeTests(unittest.TestCase):
         returned_ids = {reference["source_id"] for reference in update["references"]}
         self.assertTrue(returned_ids)
         self.assertFalse(existing_ids & returned_ids)
+
+    def test_queries_cover_all_domain_topics_without_extra_calls(self) -> None:
+        queries = _domain_queries(self.state, "TurboQuant", "")
+
+        self.assertEqual(len(queries), 2 * config.QUERIES_PER_STANCE)
+        self.assertEqual(sum(stance == "positive" for _, stance in queries), config.QUERIES_PER_STANCE)
+        self.assertEqual(sum(stance == "negative" for _, stance in queries), config.QUERIES_PER_STANCE)
+        query_text = "\n".join(query for query, _ in queries)
+        for topic in (
+            "cost serving throughput",
+            "model quality compression offloading",
+            "GPU host transfer memory bandwidth",
+            "deployment barrier infrastructure",
+        ):
+            self.assertIn(topic, query_text)
+
+    def test_empty_content_is_not_evidence_or_reference(self) -> None:
+        empty_source_ids: set[str] = set()
+
+        def mixed_content_search(query: str, stance: str, **kwargs):
+            valid, empty, *_ = fake_search(query, stance, **kwargs)
+            empty_source_ids.add(empty["source_id"])
+            return [valid, {**empty, "content": "  \t  "}]
+
+        update = domain_node(self.state, search_fn=mixed_content_search, client=self.client)
+
+        evidence = [
+            item
+            for result in update["domain_result"].values()
+            for axis in ("cost", "throughput", "model_quality", "transfer_overhead", "deployment_barrier")
+            for item in result[axis]
+        ]
+        self.assertTrue(evidence)
+        self.assertTrue(all(item["claim"].strip() for item in evidence))
+        self.assertFalse(empty_source_ids & {reference["source_id"] for reference in update["references"]})
+        self.assertEqual(update["node_result"]["status"], "success")
+
+    def test_all_empty_content_is_e1001_success(self) -> None:
+        def empty_content_search(query: str, stance: str, **kwargs):
+            return [{**record, "content": " "} for record in fake_search(query, stance, **kwargs)]
+
+        update = domain_node(self.state, search_fn=empty_content_search, client=self.client)
+
+        self.assertEqual(update["node_result"]["status"], "success")
+        self.assertEqual(update["references"], [])
+        self.assertTrue(all(
+            result["summary"].startswith("[E-1001]")
+            for result in update["domain_result"].values()
+        ))
     def test_retry_and_search_error_contracts_are_preserved(self) -> None:
         first, retry = [], []
         def track(calls):
@@ -102,8 +159,8 @@ class DomainNodeTests(unittest.TestCase):
         empty = domain_node(self.state, search_fn=lambda *_a, **_k: [], client=self.client)
         failed = domain_node(self.state, search_fn=lambda *_a, **_k: SearchFailureResult(), client=self.client)
         self.assertTrue(all(x["summary"].startswith("[E-1001]") for x in empty["domain_result"].values()))
-        self.assertTrue(all(x["summary"].startswith("[E-1002]") for x in failed["domain_result"].values()))
         self.assertEqual(empty["node_result"]["status"], "success")
+        self.assertEqual(set(failed), {"node_result"})
         self.assertEqual(failed["node_result"]["status"], "failed")
         self.assertIn("E-1002", failed["node_result"]["error"])
     def test_partial_search_failure_recovers_with_later_results(self) -> None:
@@ -129,12 +186,19 @@ class DomainNodeTests(unittest.TestCase):
         update = domain_node(self.state, search_fn=content_mismatch_search, client=ContentClient())
         result = update["domain_result"]["TurboQuant"]
         self.assertEqual([(x["source_id"], x["stance"]) for x in [*result["cost"], *result["throughput"], *result["model_quality"]]], [("web:support", "positive"), ("web:limit", "negative"), ("web:neutral", "neutral")])
-    def test_llm_failure_still_returns_e1002(self) -> None:
+    def test_node_wide_llm_failure_preserves_existing_state_without_secret(self) -> None:
+        self.state["domain_result"] = domain_node(
+            self.state, search_fn=fake_search, client=self.client
+        )["domain_result"]
+        before = copy.deepcopy(self.state)
+
         update = domain_node(self.state, search_fn=fake_search, client=FailingClient())
-        self.assertTrue(all(x["summary"].startswith("[E-1002]") for x in update["domain_result"].values()))
+
+        self.assertEqual(set(update), {"node_result"})
         self.assertEqual(update["node_result"]["status"], "failed")
         self.assertIn("E-1002", update["node_result"]["error"])
         self.assertNotIn(SECRET_MESSAGE, repr(update))
+        self.assertEqual(self.state, before)
 
     def test_one_technology_search_failure_keeps_node_success_without_secret(self) -> None:
         def search(query: str, stance: str, **kwargs):
@@ -167,6 +231,25 @@ class DomainNodeTests(unittest.TestCase):
         update = domain_node(state, search_fn=fake_search, client=self.client)
 
         self.assertEqual(update["node_result"]["dispatch_id"], 0)
+
+    def test_missing_required_input_preserves_existing_state(self) -> None:
+        existing_result = domain_node(
+            self.state, search_fn=fake_search, client=self.client
+        )["domain_result"]
+        for key in ("tech_sw", "tech_hw", "domain"):
+            with self.subTest(key=key):
+                state = copy.deepcopy(self.state)
+                state["domain_result"] = existing_result
+                del state[key]
+                before = copy.deepcopy(state)
+
+                update = domain_node(state, search_fn=fake_search, client=self.client)
+
+                self.assertEqual(set(update), {"node_result"})
+                self.assertEqual(update["node_result"]["status"], "failed")
+                self.assertIn("E-1002", update["node_result"]["error"])
+                self.assertEqual(update["node_result"]["dispatch_id"], state["control"]["dispatch_id"])
+                self.assertEqual(state, before)
 
 
 if __name__ == "__main__":

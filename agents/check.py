@@ -73,8 +73,9 @@ def _evidence_status(evidence: Sequence[Evidence], perspective: str) -> tuple[bo
         problems.append(f"Evidence {total}개")
     if stance_counts["positive"] < config.MIN_POSITIVE:
         problems.append("지지(positive) 근거 미확인")
-    if stance_counts["negative"] < config.MIN_NEGATIVE:
-        problems.append("반론 근거 미확인(negative 0건)")
+    negative_count = stance_counts["negative"]
+    if negative_count < config.MIN_NEGATIVE:
+        problems.append(f"반론 근거 미확인(negative {negative_count}건)")
     if top_share > config.SAME_SOURCE_CAP:
         problems.append(f"한 출처 비율 {top_share:.0%}")
     return not problems, ", ".join(problems)

@@ -171,7 +171,8 @@ def _stakeholder_queries(technology: TechName, hint: str) -> list[tuple[str, Sta
         ("negative", "limitations challenges counterevidence"),
     ):
         for index in range(config.QUERIES_PER_STANCE):
-            topic = topics[index % len(topics)]
+            topic_offset = 0 if stance == "positive" else config.QUERIES_PER_STANCE
+            topic = topics[(index + topic_offset) % len(topics)]
             queries.append(
                 (f"{technology} KV cache optimization {topic} {intent}{retry_context}", stance)
             )
@@ -200,7 +201,7 @@ def _resolve_search_fn(search_fn: Callable[..., list[dict[str, Any]]] | None) ->
     return search_web
 
 
-def stakeholder_node(
+def _stakeholder_payload(
     state: State,
     *,
     search_fn: Callable[..., list[dict[str, Any]]] | None = None,
@@ -211,13 +212,7 @@ def stakeholder_node(
     try:
         search = _resolve_search_fn(search_fn)
     except Exception as exc:  # noqa: BLE001 - unavailable search dependency is E-1002
-        message = f"[E-1002] 검색 도구 사용 실패 ({type(exc).__name__})"
         return {
-            "stakeholder_result": {
-                state["tech_sw"]: _empty_result(message),
-                state["tech_hw"]: _empty_result(message),
-            },
-            "references": [],
             "node_result": NodeResult(
                 node="stakeholder",
                 dispatch_id=(state.get("control") or {}).get("dispatch_id", 0),
@@ -232,13 +227,7 @@ def stakeholder_node(
 
             client = StructuredClient()
         except Exception as exc:  # noqa: BLE001 - client setup failure is E-1002
-            message = f"[E-1002] LLM 클라이언트 생성 실패 ({type(exc).__name__})"
             return {
-                "stakeholder_result": {
-                    state["tech_sw"]: _empty_result(message),
-                    state["tech_hw"]: _empty_result(message),
-                },
-                "references": [],
                 "node_result": NodeResult(
                     node="stakeholder",
                     dispatch_id=(state.get("control") or {}).get("dispatch_id", 0),
@@ -269,10 +258,13 @@ def stakeholder_node(
                     search_failed = True
                     continue
                 for record in found:
+                    claim = str(record.get("content") or "").strip()
+                    if not claim:
+                        continue
                     reference = _record_to_reference(record)
                     references_by_id[reference["source_id"]] = reference
                     candidate = {
-                        "claim": record["content"],
+                        "claim": claim,
                         "source_id": reference["source_id"],
                         # Retrieval intent must not pre-classify Evidence stance.
                         "stance": "neutral",
@@ -324,13 +316,53 @@ def stakeholder_node(
             if technology not in evidence_technologies:
                 result["summary"] = f"[E-1004] 한 기술만 근거 확보: {result['summary']}"
     all_failed = len(failed_technologies) == 2
+    if all_failed:
+        return {
+            "node_result": NodeResult(
+                node="stakeholder",
+                dispatch_id=(state.get("control") or {}).get("dispatch_id", 0),
+                status="failed",
+                error="E-1002 두 기술 실행 실패",
+            ),
+        }
     return {
         "stakeholder_result": results,
         "references": references,
         "node_result": NodeResult(
             node="stakeholder",
             dispatch_id=(state.get("control") or {}).get("dispatch_id", 0),
-            status="failed" if all_failed else "success",
-            error="E-1002 두 기술 실행 실패" if all_failed else "",
+            status="success",
+            error="",
         ),
     }
+
+
+def stakeholder_node(
+    state: State,
+    *,
+    search_fn: Callable[..., list[dict[str, Any]]] | None = None,
+    client: StructuredOutputClient | None = None,
+) -> dict:
+    """Search and classify stakeholder Evidence for both selected technologies."""
+
+    missing = [key for key in ("tech_sw", "tech_hw") if not state.get(key)]
+    if missing:
+        return {
+            "node_result": NodeResult(
+                node="stakeholder",
+                dispatch_id=(state.get("control") or {}).get("dispatch_id", 0),
+                status="failed",
+                error=f"E-1002 필수 State 입력 누락: {', '.join(missing)}",
+            ),
+        }
+    try:
+        return _stakeholder_payload(state, search_fn=search_fn, client=client)
+    except Exception:  # noqa: BLE001 - node boundary must not stop the graph
+        return {
+            "node_result": NodeResult(
+                node="stakeholder",
+                dispatch_id=(state.get("control") or {}).get("dispatch_id", 0),
+                status="failed",
+                error="E-1002 이해관계자 실행 실패",
+            ),
+        }
