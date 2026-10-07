@@ -421,3 +421,18 @@ def test_llm_error_message_has_no_provider_text(monkeypatch):
     with pytest.raises(llm.LLMError) as err:
         llm.generate("x")
     assert "sk-proj" not in str(err.value) and "RuntimeError" in str(err.value)
+
+
+def test_trl_evidence_count_matches_sufficiency_rule():
+    """TRL 근거 개수는 근거 단위(같은 논문의 다른 페이지도 각각)로 세고, 충분성 판정과 같은 값을 쓴다."""
+    import state as st
+    from agents.check import evaluate_sufficiency
+
+    s = sample_state_after_eval(True)
+    for tech in st.TECHS:
+        s["trl_result"][tech]["evidence"] = [
+            {"claim": "p1 주장", "source_id": "arxiv:2504.19874#p1", "stance": "positive"},
+            {"claim": "p7 주장", "source_id": "arxiv:2504.19874#p7", "stance": "positive"},
+        ]
+        assert st.trl_evidence_count(s, tech) == 2
+    assert evaluate_sufficiency(s)["trl"] is True

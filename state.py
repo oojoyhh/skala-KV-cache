@@ -266,6 +266,16 @@ def perspective_evidence(state: State, perspective: str, tech: TechName) -> list
     return list(unique.values())
 
 
+def trl_evidence_count(state: State, tech: TechName) -> int:
+    """TRL 근거 개수 — 충분성(check)·품질 평가(quality)·보고서(report)가 함께 쓰는 단일 기준.
+
+    perspective_evidence가 (source_id, claim) 중복만 제거한 근거 수다. 같은 논문의 다른 페이지는 각각 센다
+    (팀 결정: 서로 다른 문서 기준보다 덜 엄격한 근거 개수 기준). config.MIN_TRL_EVIDENCE와 비교한다.
+    TRL "단계" 판정의 '서로 다른 출처 2개' 규칙(설계서 C-2, market)과는 별개다.
+    """
+    return len(perspective_evidence(state, "trl", tech))
+
+
 def retry_hint(state: State, perspective: str) -> str:
     """재조사 시 충분성 검사가 남긴 부족 사유를 꺼낸다. 첫 실행이면 빈 문자열.
 

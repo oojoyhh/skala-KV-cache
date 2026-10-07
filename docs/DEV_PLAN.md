@@ -141,7 +141,7 @@ StructuredClient(role="judge")                    # .invoke(prompt, response_mod
   - 관점별로 **두 기술 각각** 충족해야 True
   - Evidence ≥ `MIN_EVIDENCE`(4), 지지(positive) ≥ 1 · 한계·반론(negative) ≥ 1 — stance 정의는 설계서 v5 D-1 / `state.py` 주석
   - 한 source_id가 관점 근거의 `SAME_SOURCE_CAP`(50%) 초과 시 불충분
-  - TRL: `trl_result[tech]["evidence"]` ≥ `MIN_TRL_EVIDENCE`(2)
+  - TRL: `state.trl_evidence_count(state, tech)` ≥ `MIN_TRL_EVIDENCE`(2). **근거 개수 기준**(같은 논문의 다른 페이지도 각각 셈) — 충분성·품질 평가·보고서가 이 함수 하나로 센다. TRL **단계** 판정의 "서로 다른 출처 2개" 규칙(설계서 C-2, market)과는 별개다
 - `reasons[관점]`에는 **무엇이 부족한지** 한 줄 (예: `"InfiniGen: 반론 근거 미확인(negative 0건)"`) → 다음 재조사의 쿼리 힌트(`retry_hint`). 품질 기반 재조사 때는 supervisor가 `"품질 평가: ..."` 사유를 같은 자리에 넣는다(계약 1-4).
 - **반대 근거를 만들어내지 않는다.** 재조사 후에도 한계·반론 근거가 없으면 그대로 두고, 평가 종합이 `reasons`를 한계점에 "반론 근거 미확인"으로 기록한다 (E-1005와 같은 경로).
 
