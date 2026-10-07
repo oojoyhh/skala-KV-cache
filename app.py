@@ -96,5 +96,6 @@ def print_summary(final: dict) -> None:
     if skipped or c["node_errors"]:
         print(f"  제외된 노드: {skipped or '없음'}  오류: {c['node_errors'] or '없음'}")
 
+
 if __name__ == "__main__":
     main()

@@ -86,6 +86,14 @@ def test_retry_limit_uses_supervisor_counters(retries, status, expect_cap):
     assert any("E-1005" in text for text in out["limitations"]) is expect_cap
 
 
+def test_step_cap_stop_is_reported_when_retries_remain():
+    state = sample_state_after_eval(False)          # stakeholder 부족, 재조사 기회 남음
+    state["control"]["run_status"] = "exhausted"    # supervisor 마무리 모드
+    out = synthesis_node(state, client=client_for(state))["synthesis"]
+    assert any(t.startswith("[E-1005] 실행 상한 도달로 재조사 중단") and "이해관계자" in t for t in out["limitations"])
+    assert not any(t.startswith("[E-1005] 재조사 상한 도달") for t in out["limitations"])
+
+
 def test_successful_sufficiency_does_not_report_cap():
     state = sample_state_after_eval(True)
     state["control"]["evidence_retry_counts"] = {n: config.MAX_AGENT_RETRY for n in ("market", "stakeholder", "domain")}
@@ -326,3 +334,23 @@ def test_report_rejects_partly_unresolvable_synthesis_citations():
     out = _synthesis_for_report(state["synthesis"], cites, allowed)
     assert out["agreements"] == []
     assert len(out["conflicts"]) == 1
+
+
+def test_graph_continues_to_report_when_synthesis_keeps_failing():
+    """synthesis가 재시도까지 실패해도 대체 결과가 있으면 보고서까지 간다 (계약 1-2 규칙 2)."""
+    from graph import build_graph
+
+    client = FakeClient(llm.LLMError("API 장애"))
+    overrides = {
+        "synthesis": partial(synthesis_node, client=client),
+        "report": lambda state: {"report_path": "test-report-no-file.pdf", "report_version": state.get("report_version", 0) + 1,
+                                 "node_result": {"node": "report", "dispatch_id": state["control"]["dispatch_id"],
+                                                 "status": "success", "error": ""}},
+    }
+    final = build_graph(dummy=True, overrides=overrides).invoke(make_initial_state())
+    control = final["control"]
+    assert control["exec_retry_counts"]["synthesis"] == config.MAX_EXEC_RETRY
+    assert control["node_status"]["synthesis"] == "skipped"
+    assert control["node_errors"]["synthesis"].startswith("E-1002")
+    assert final["report_path"] == "test-report-no-file.pdf"
+    assert any("E-1002" in t for t in final["synthesis"]["limitations"])

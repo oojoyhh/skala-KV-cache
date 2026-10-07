@@ -83,6 +83,11 @@ def _limitations(state: State) -> list[str]:
     if capped:
         names = ", ".join(PERSPECTIVE_NAMES[p] for p in capped)
         limits.append(f"[E-1005] 재조사 상한 도달: {names} 근거 부족 상태로 종합")
+    # 재조사 기회가 남았어도 전체 실행 상한(마무리 모드)으로 멈춘 경우 (supervisor가 run_status를 exhausted로 둠)
+    stopped = [p for p in missing if p not in capped]
+    if stopped and state.get("control", {}).get("run_status") == "exhausted":
+        names = ", ".join(PERSPECTIVE_NAMES[p] for p in stopped)
+        limits.append(f"[E-1005] 실행 상한 도달로 재조사 중단: {names} 근거 부족 상태로 종합")
     for tech in TECHS:
         for limit in state.get("tech_summary", {}).get(tech, {}).get("limitations", []):
             if limit:
