@@ -15,6 +15,8 @@ import llm
 from state import (PERSPECTIVE_NODE, PERSPECTIVES, PERSPECTIVE_FIELDS, TECHS, Conflict, Evidence, Perspective, State,
                    Synthesis, TechName, perspective_evidence)
 
+NEUTRALITY_NOTE = ("공개 정보에 근거해 관점별 일치·상충을 정리하며 기술의 우열을 판정하거나 추천하지 않음. "
+                   "근거 수와 stance 개수는 성능 점수나 우열을 의미하지 않음.")
 PERSPECTIVE_NAMES = {"trl": "기술 성숙도(TRL)", "market": "시장성", "stakeholder": "이해관계자", "domain": "도메인 적용"}
 
 
@@ -153,11 +155,28 @@ def _payload(state: State, catalog: dict, counts: dict) -> dict:
 
 
 def synthesis_node(state: State, *, client: SynthesisClient | None = None) -> dict:
-    """새 검색 없이 입력 State를 종합한다. client는 API 없는 테스트용 주입점."""
+    """새 검색 없이 입력 State를 종합한다. client는 API 없는 테스트용 주입점.
+
+    어떤 예외도 그래프 밖으로 던지지 않는다(계약 3장). 예상 밖 오류는 한계 목록만 담은 대체 종합과
+    failed(E-1002)를 반환해, supervisor가 재시도하거나 대체 결과로 보고서까지 진행하게 한다.
+    """
+    try:
+        return _synthesize(state, client)
+    except Exception as exc:  # noqa: BLE001 — 오류 원문은 싣지 않는다 (비밀값 노출 방지)
+        error = f"E-1002 평가 종합 실패 ({type(exc).__name__})"
+        try:
+            limits = _limitations(state)
+        except Exception:  # noqa: BLE001
+            limits = []
+        fallback: Synthesis = {"agreements": [], "conflicts": [], "neutrality_note": NEUTRALITY_NOTE,
+                               "limitations": [*limits, f"[{error.split()[0]}] 평가 종합 중 예상하지 못한 오류로 일치·상충을 종합하지 못함"]}
+        return {"synthesis": fallback, "node_result": _node_result(state, error)}
+
+
+def _synthesize(state: State, client: SynthesisClient | None) -> dict:
     synthesis: Synthesis = {
         "agreements": [], "conflicts": [],
-        "neutrality_note": "공개 정보에 근거해 관점별 일치·상충을 정리하며 기술의 우열을 판정하거나 추천하지 않음. "
-                           "근거 수와 stance 개수는 성능 점수나 우열을 의미하지 않음.",
+        "neutrality_note": NEUTRALITY_NOTE,
         "limitations": _limitations(state),
     }
     catalog = evidence_catalog(state)
