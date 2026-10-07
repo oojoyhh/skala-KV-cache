@@ -283,7 +283,8 @@ def research_node(
     reference_fn: ReferenceFn | None = None,
 ) -> dict[str, Any]:
     """두 기술의 조사 결과와 이번 실행의 NodeResult를 반환한다."""
-    dispatch_id = state["control"]["dispatch_id"]
+    control = state.get("control") or {}
+    dispatch_id = control.get("dispatch_id", 0)
 
     try:
         summaries: dict[TechName, TechSummary] = {}
@@ -329,7 +330,10 @@ def research_node(
             "node": "research",
             "dispatch_id": dispatch_id,
             "status": "failed",
-            "error": f"E-1002 기술 조사 실행 실패: {exc}",
+            "error": (
+                "E-1002 기술 조사 실행 실패: "
+                f"{type(exc).__name__}"
+            ),
         }
         return {"node_result": node_result}
 

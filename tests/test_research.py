@@ -503,7 +503,55 @@ class ResearchNodeTest(unittest.TestCase):
 
         self.assert_success_node_result(output)
 
+    def test_unexpected_error_does_not_expose_original_message(self):
+        """예상하지 못한 오류에서도 외부 예외 원문을 노출하지 않는다."""
+        sensitive_message = (
+            "Incorrect API key provided: sk-proj-secret-value"
+        )
+
+        with patch(
+            "agents.research._research_one",
+            side_effect=RuntimeError(sensitive_message),
+        ):
+            output = research_node(make_initial_state())
+
+        self.assertEqual(set(output), {"node_result"})
+        self.assert_failed_node_result(
+            output,
+            error_code="E-1002",
+        )
+        self.assertEqual(
+            output["node_result"]["error"],
+            "E-1002 기술 조사 실행 실패: RuntimeError",
+        )
+        self.assertNotIn(
+            sensitive_message,
+            output["node_result"]["error"],
+        )
+        self.assertNotIn(
+            "sk-proj",
+            output["node_result"]["error"],
+        )
+
+    def test_missing_control_uses_default_dispatch_id(self):
+        """control이 없는 비정상 State에서도 예외를 밖으로 던지지 않는다."""
+        state = make_initial_state()
+        state.pop("control")
+
+        output = research_node(
+            state,
+            retrieve_fn=fake_retrieve,
+            generate_fn=fake_generate,
+            grade_fn=lambda _query, _chunk: True,
+            rewrite_fn=lambda query, _name, _attempt: query + " retry",
+            reference_fn=fake_reference,
+        )
+
+        self.assert_success_node_result(
+            output,
+            dispatch_id=0,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
-    
