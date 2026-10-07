@@ -491,6 +491,15 @@ class ResearchNodeTest(unittest.TestCase):
                 output["tech_summary"][name]["key_metrics"],
                 {"측정 결과": "41.99 tokens/s"},
             )
+            self.assertEqual(
+                output["tech_summary"][name]["limitations"][0],
+                "[E-1001] 검증된 논문 근거 없음 — "
+                "근거 없는 수치 주장 1건 제외",
+            )
+            self.assertNotIn(
+                "9999",
+                " ".join(output["tech_summary"][name]["limitations"]),
+            )
 
         self.assert_success_node_result(output)
 
@@ -538,6 +547,12 @@ class ResearchNodeTest(unittest.TestCase):
         self.assertEqual(summary["key_metrics"], {"연도": "2023"})
         self.assertEqual(len(summary["evidence"]), 1)
         self.assertIn("2023", summary["evidence"][0]["claim"])
+        self.assertFalse(
+            any(
+                limitation.startswith("[E-1001]")
+                for limitation in summary["limitations"]
+            )
+        )
 
     def test_one_relevant_chunk_is_sufficient(self):
         """기술별 관련 청크가 하나라도 있으면 생성 단계로 진행한다."""

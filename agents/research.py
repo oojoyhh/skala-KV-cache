@@ -192,6 +192,7 @@ def _validate_summary(
         for source_id in allowed
     }
     evidence: list[Evidence] = []
+    excluded_numeric_evidence = 0
     for item in raw.get("evidence", []):
         if not isinstance(item, Mapping):
             raise ValueError("Evidence 형식이 잘못되었습니다.")
@@ -202,6 +203,7 @@ def _validate_summary(
             raise ValueError("Evidence 주장, 검색 출처 또는 stance가 유효하지 않습니다.")
         if not _numbers_are_supported(claim, text_by_source[source_id]):
             # 근거 없는 수치 주장만 제외하고, 검증된 다른 Evidence는 유지한다.
+            excluded_numeric_evidence += 1
             continue
         evidence.append({"claim": claim, "source_id": source_id, "stance": stance})
     if not raw.get("approach") or not raw.get("scope"):
@@ -214,13 +216,24 @@ def _validate_summary(
             raise ValueError("key_metrics 측정값은 문자열이어야 합니다.")
         if _numbers_are_supported(value, context):
             validated_metrics[str(key)] = value
+    limitations = [
+        str(item).strip()
+        for item in raw.get("limitations", [])
+        if str(item).strip()
+    ]
+    if excluded_numeric_evidence and not evidence:
+        limitations.insert(
+            0,
+            "[E-1001] 검증된 논문 근거 없음 — "
+            f"근거 없는 수치 주장 {excluded_numeric_evidence}건 제외",
+        )
     return {
         "name": name,
         "camp": camp,
         "approach": str(raw["approach"]).strip(),
         "scope": str(raw["scope"]).strip(),
         "key_metrics": validated_metrics,
-        "limitations": [str(item).strip() for item in raw.get("limitations", []) if str(item).strip()],
+        "limitations": limitations,
         "evidence": evidence,
     }
 
