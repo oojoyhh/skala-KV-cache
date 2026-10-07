@@ -5,6 +5,8 @@ import unittest
 from agents.domain import DomainStructuredResponse, Evidence, build_domain_prompt, domain_node, evaluate_domain
 from tests.fixtures import fake_search, sample_state_after_research
 
+SECRET_MESSAGE = "Incorrect API key provided: sk-proj-SECRET"
+
 
 class SearchFailureResult(list):
     error_code = "E-1002"
@@ -26,7 +28,7 @@ class SelectingClient:
 
 class FailingClient:
     def invoke(self, *_: object) -> DomainStructuredResponse:
-        raise RuntimeError("LLM unavailable")
+        raise RuntimeError(SECRET_MESSAGE)
 
 
 class ContentClient:
@@ -132,6 +134,39 @@ class DomainNodeTests(unittest.TestCase):
         self.assertTrue(all(x["summary"].startswith("[E-1002]") for x in update["domain_result"].values()))
         self.assertEqual(update["node_result"]["status"], "failed")
         self.assertIn("E-1002", update["node_result"]["error"])
+        self.assertNotIn(SECRET_MESSAGE, repr(update))
+
+    def test_one_technology_search_failure_keeps_node_success_without_secret(self) -> None:
+        def search(query: str, stance: str, **kwargs):
+            if "InfiniGen" in query:
+                raise RuntimeError(SECRET_MESSAGE)
+            return fake_search(query, stance, **kwargs)
+
+        update = domain_node(self.state, search_fn=search, client=self.client)
+
+        self.assertEqual(update["node_result"]["status"], "success")
+        self.assertEqual(update["node_result"]["error"], "")
+        self.assertTrue(update["domain_result"]["TurboQuant"]["cost"])
+        self.assertIn("E-1002", update["domain_result"]["InfiniGen"]["summary"])
+        self.assertIn("E-1004", update["domain_result"]["InfiniGen"]["summary"])
+        self.assertNotIn(SECRET_MESSAGE, repr(update))
+
+    def test_one_technology_evidence_marks_e1004(self) -> None:
+        def search(query: str, stance: str, **kwargs):
+            return [] if "InfiniGen" in query else fake_search(query, stance, **kwargs)
+
+        update = domain_node(self.state, search_fn=search, client=self.client)
+
+        self.assertEqual(update["node_result"]["status"], "success")
+        self.assertIn("E-1004", update["domain_result"]["InfiniGen"]["summary"])
+
+    def test_missing_control_uses_default_dispatch_id(self) -> None:
+        state = copy.deepcopy(self.state)
+        del state["control"]
+
+        update = domain_node(state, search_fn=fake_search, client=self.client)
+
+        self.assertEqual(update["node_result"]["dispatch_id"], 0)
 
 
 if __name__ == "__main__":
