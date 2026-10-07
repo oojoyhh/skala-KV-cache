@@ -42,7 +42,7 @@ def main() -> None:
         print(f"저장: {export_mermaid(dummy=True)}")
         return
 
-    # LangSmith: .env의 LANGSMITH_TRACING=true + LANGSMITH_API_KEY면 자동 추적 (계약 6장)
+    # LangSmith: .env의 LANGSMITH_TRACING=true + LANGSMITH_API_KEY(필수, check_env)면 자동 추적 (계약 6장)
     os.environ.setdefault("LANGSMITH_PROJECT", config.LANGSMITH_PROJECT)
     tracing = os.getenv("LANGSMITH_TRACING", "").lower() == "true"
 
