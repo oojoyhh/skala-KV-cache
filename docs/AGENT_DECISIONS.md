@@ -4,7 +4,7 @@ Agent 과제(Multi-Agent Orchestration)에서 팀이 내린 큰 결정과 그 �
 구현 계약 전문은 `docs/AGENT_CONTRACT.md`가 기준이다. 이 문서는 "왜 그렇게 정했는지"를 기록한다.
 
 - 결정일: 2026-10-07
-- 결정 방식: 팀 논의 (제안서 → 피드백 2회 → 계약 v1 → 피드백 fix1~fix4 → 계약 v2)
+- 결정 방식: 팀 논의 (제안서 → 피드백 2회 → 계약 v1 → 피드백 fix1~fix4 → 계약 v2 → 가이드 재검토 v2.1 → 품질 기반 재조사 v2.2)
 
 ---
 
@@ -74,7 +74,7 @@ Agent 과제(Multi-Agent Orchestration)에서 팀이 내린 큰 결정과 그 �
     - `exec_retry_counts`: 실행 실패, 7개 노드 모두, 상한 `MAX_EXEC_RETRY`
     - `evidence_retry_counts`: 근거 부족 재조사, market·stakeholder·domain, 상한 `MAX_AGENT_RETRY`
     - `report_retry_count`: 품질 미달 재작성, 상한 `MAX_REPORT_RETRY`
-  - 실행 재시도 상한에 닿은 노드는 `skipped`로 두고 **어떤 규칙에서도** 다시 고르지 않는다. 조사 노드는 제외하고 진행하고, synthesis·report·quality는 `END`(`exhausted`)로 끝낸다.
+  - 실행 재시도 상한에 닿은 노드는 `skipped`로 두고 **어떤 규칙에서도** 다시 고르지 않는다. 조사 노드는 제외하고 진행한다. synthesis·report는 쓸 수 있는 산출물이 State에 있으면 계속 진행하고(PR #35 셀프 검토: LLM 일시 장애로 보고서가 생성되지 않는 것을 막음), 없으면 `END`(`exhausted`). quality는 `END`.
   - supervisor가 노드를 부를 때 `dispatch_id`(= 그 시점의 `step_count`)를 발급하고, 노드는 `node_result.dispatch_id`로 그대로 돌려준다. 노드 이름과 `dispatch_id`가 모두 맞아야 유효한 결과로 본다.
   - 최초 진입(`next_node == ""`)에서는 결과 검증을 건너뛴다.
   - 노드별 오류는 `control.node_errors`에 남기고, 보고서의 수집 오류 절이 이 값도 읽는다.
@@ -85,7 +85,7 @@ Agent 과제(Multi-Agent Orchestration)에서 팀이 내린 큰 결정과 그 �
   - 최초 진입은 결과가 없는 게 정상이라 누락으로 오판하면 안 된다.
   - `last_error` 하나로는 여러 노드가 실패했을 때 앞의 오류가 사라진다.
 
-## D6. 품질 평가: 항목별 Hybrid, 보고서 표현만 책임
+## D6. 품질 평가: 항목별 Hybrid, 원인별 조치 권고
 
 - **결정**
   - 네 항목 모두 **규칙 검사 + LLM Judge**로 판정한다. Judge는 1회 호출로 네 항목을 함께 본다.
@@ -96,15 +96,18 @@ Agent 과제(Multi-Agent Orchestration)에서 팀이 내린 큰 결정과 그 �
   - Groundedness 규칙은 사실 주장 절(3장, 4-1~4-4, 5장)만 본다. 코드가 쓰는 고정 문단은 제외한다.
   - 평가 원본은 보고서 Markdown(`report_md_path`)이다. Judge 입력은 SUMMARY·4-1~4-4·5장과 인용된 Evidence `claim`으로 제한한다. PDF는 쪽수(10쪽 이하)만 확인한다.
   - 형식 검사로 필수 목차(SUMMARY, REFERENCE) 절이 있는지 확인한다. 없으면 미달이다.
-  - **Quality는 보고서가 확보된 근거를 올바르게 사용·표시했는지만 평가한다.** 근거 충분성은 supervisor의 `evaluate_sufficiency`가 맡는다. 미달 시 재조사하지 않고 보고서만 재작성한다.
-  - quality는 `quality_result`만 쓴다. 재작성 여부는 supervisor가 정한다. report는 `feedback`을 반영하되 분량이 늘지 않게 한다.
+  - **미달이면 원인에 따라 조치를 권고한다(v2.2).** 표현·인용·중립성·목차·분량 문제는 `action = "rewrite"`(보고서 재작성), State 자체에 그 관점 근거가 없거나 쏠린 문제는 `action = "research"`와 `target_node`(market·stakeholder·domain 재조사). `research` 판단은 보고서 문장이 아니라 State의 근거로 확인한다.
+  - quality는 `quality_result`만 쓰고 권고만 한다. 실제 다음 노드는 supervisor가 정한다. 품질 기반 재조사는 실행 전체에서 `MAX_QUALITY_RESEARCH`(1)회, 근거 부족 재조사(`evidence_retry_counts`)와 따로 센다. 재조사 뒤에는 `control.stale`로 synthesis·report를 다시 만들게 한다.
+  - report는 재작성할 때 `feedback`을 반영하되 분량이 늘지 않게 한다.
   - 보고서 버전(`report_version`)과 평가 버전(`evaluated_report_version`)이 다르면 quality를 다시 실행한다.
-- **검토한 대안:** 형식 검사만 / LLM Judge만 / Groundedness·Coverage는 규칙만, Neutrality·Bias는 Judge만 / 미달 항목에 따라 재조사로 되돌림 / "인용 없는 주장 문장 없음"을 규칙으로 판정 / 보고서 전문을 State에 저장.
+- **검토한 대안:** 형식 검사만 / LLM Judge만 / Groundedness·Coverage는 규칙만, Neutrality·Bias는 Judge만 / 품질 미달은 항상 보고서 재작성만(v2·v2.1 방식) / 품질 노드가 직접 다음 노드 지정 / "인용 없는 주장 문장 없음"을 규칙으로 판정 / 보고서 전문을 State에 저장.
 - **이유**
   - 항목마다 규칙으로 잴 수 있는 부분은 결정적으로 판정하고, 의미 판단만 Judge에 맡긴다. 규칙만 쓰면 의미상 틀린 인용이 통과하고, Judge만 쓰면 결과가 흔들린다.
   - "인용 없는 주장"은 정규식으로 판별할 수 없고, 코드가 쓰는 고정 문단에는 인용이 없어 항상 미달이 된다. 그래서 규칙은 "인용 연결"까지만 보장하고, 실제 뒷받침 여부는 Judge가 본다고 구분한다.
   - 근거가 0건인 관점은 보고서가 "공개 근거 미확인"으로 적는다. 이를 미달로 보면 재작성해도 영구 미달이고, 근거를 만들어내지 않는다는 원칙과 충돌한다.
-  - 재조사(규칙 5)가 종합보다 먼저 돌기 때문에, 품질 평가 시점에 부족한 관점은 이미 재조사 상한을 다 쓴 상태다. 품질 미달로 재조사로 되돌려도 실행되는 경우가 거의 없고, 종합·보고서 무효화 규칙까지 필요해진다.
+  - 근거가 State에 없으면 보고서를 다시 써도 고쳐지지 않는다. 교수님 피드백(예: InfiniGen 시장성 근거 부족)도 품질 평가가 추가 조사 여부를 판단하고 그 과정이 트레이스에 보이기를 요구했다.
+  - v2·v2.1에서 재조사를 뺀 이유는 두 가지였다: 품질 평가 시점에는 근거 부족 재조사 기회가 이미 소진되어 있고, 종합·보고서를 무효화하는 규칙이 필요하다. v2.2는 품질 기반 재조사 기회를 **별도 카운터**로 두고, 무효화는 `stale` 목록 하나로 처리해 두 문제를 최소 변경으로 해결했다.
+  - 권고와 결정을 나눠 "Supervisor만 라우팅" 원칙을 유지한다. 관점 노드에는 supervisor가 `sufficiency.reasons`로 품질 사유를 넘기므로 기존 `retry_hint`를 그대로 쓴다.
   - 보고서 Markdown은 이미 PDF와 함께 생성되고 있어 State를 키우지 않고 평가할 수 있다.
 
 ## D7. 상한값과 종료
@@ -114,7 +117,8 @@ Agent 과제(Multi-Agent Orchestration)에서 팀이 내린 큰 결정과 그 �
 | `MAX_EXEC_RETRY` | 1 | 노드 실행 실패 시 재시도 횟수 (7개 노드 공통) |
 | `MAX_AGENT_RETRY` | 2 | 관점 노드 하나의 근거 부족 재조사 횟수 |
 | `MAX_REPORT_RETRY` | 1 | 품질 미달 시 보고서 재작성 횟수 |
-| `MAX_TOTAL_STEPS` | 20 | 하위 노드 실행 횟수 안전장치. 도달하면 마무리 모드 |
+| `MAX_QUALITY_RESEARCH` | 1 | 품질 평가 기반 재조사 횟수 (실행 전체) |
+| `MAX_TOTAL_STEPS` | 24 | 하위 노드 실행 횟수 안전장치. 도달하면 마무리 모드 |
 | `MAX_REPORT_PAGES` | 10 | 보고서 최대 쪽수 |
 | `RECURSION_LIMIT` | `2 * (MAX_TOTAL_STEPS + 3) + 10` | LangGraph `recursion_limit` (supervisor 방문 포함) |
 
@@ -124,8 +128,9 @@ Agent 과제(Multi-Agent Orchestration)에서 팀이 내린 큰 결정과 그 �
   - 즉시 `END`는 종료는 확실하지만 보고서나 품질 평가 없이 끝날 수 있다. 가이드는 보고서 뒤 품질 평가를 요구한다.
   - "없으면 계속 선택"은 해당 노드가 계속 실패하면 무한 반복된다.
   - 마무리 모드는 추가 실행이 최대 3회라 종료가 보장되고, 품질 평가도 실행된다.
-- **스텝 수로 보고서 작성을 정하지 않는다.** 보고서로 넘어가는 조건은 항상 충분성 평가 결과다(충분, 또는 재조사 상한 도달). 실패가 없을 때 정상 경로는 최대 15회라 상한 20회에 닿지 않는다. 마무리 모드는 실행 실패가 반복될 때만 작동하는 안전장치다.
-- 처음 제안은 `MAX_TOTAL_STEPS = 15`였다. 실패가 없을 때 최악의 정상 경로가 15회라서 여유를 두고 20으로 올렸다.
+  - 마무리 모드에서는 **마무리 중 시도한 노드의 실패만** 종료 사유다. 상한 직전에 조사 노드가 실패했다고 바로 끝내면 보고서 없이 종료되기 때문이다. `skipped` 노드는 마무리 모드에서도 다시 고르지 않는다.
+- **스텝 수로 보고서 작성을 정하지 않는다.** 보고서로 넘어가는 조건은 항상 충분성 평가 결과다(충분, 또는 재조사 상한 도달). 실패가 없을 때 정상 경로는 최대 19회라 상한 24회에 닿지 않는다. 마무리 모드는 실행 실패가 반복될 때만 작동하는 안전장치다.
+- 처음 제안은 `MAX_TOTAL_STEPS = 15`였다. v2에서 최악의 정상 경로(15회)에 여유를 두고 20으로, v2.2에서 품질 기반 재조사 경로(+4회, 최악 19회)를 더해 24로 올렸다.
 - 상한 도달은 PASS가 아니라 `run_status = "exhausted"`다.
 
 ## D8. 범위 제외
@@ -134,7 +139,6 @@ Agent 과제(Multi-Agent Orchestration)에서 팀이 내린 큰 결정과 그 �
 - State 대규모 구조 개편: 기존 필드 이름 변경 금지.
 - `references` Reducer 재설계, 보고서 hash.
 - 기존 RAG·웹 검색·TRL 판정 로직 개선.
-- 품질 미달 시 재조사(D6).
 
 ## D9. 관측성: LangSmith + trace_id
 
@@ -163,10 +167,14 @@ Agent 과제(Multi-Agent Orchestration)에서 팀이 내린 큰 결정과 그 �
   - 품질 평가를 항목별 Hybrid로 바꾸고 Groundedness·Coverage 기준과 책임 범위를 조정. `report_version`, `MetricResult` 추가(D6)
   - `node_errors` 추가(D5), supervisor 위치를 `orchestration/`으로 변경(D10)
 - **v2.1:** 가이드 재검토 반영. 스텝 상한이 보고서 진입 조건이 아님을 명시(D7), 재현성 범위 명시(D9), 필수 목차 형식 검사 추가(D6), 결정 로그 항목 대응 명시(D4).
+- **v2.2:** 팀원·교수님 피드백 반영. 품질 미달 원인별 조치(`action`·`target_node`), 품질 기반 재조사 1회(`MAX_QUALITY_RESEARCH`, `quality_research_count`), 재생성 표시(`stale`), `MAX_TOTAL_STEPS` 24(D6, D7, D8).
+- **v2.2.1:** 실행 재시도 상한에 닿은 synthesis·report도 산출물이 있으면 진행(D5), 실행 상한으로 재조사가 중단되면 E-1005로 명시.
+- **v2.2.2:** 1번 테스트 피드백 반영. 마무리 모드(F2~F4)와 품질 재작성(9b)에서도 `skipped` 노드를 다시 고르지 않음. F1 문구를 구현 의도(마무리 모드에서 시도한 노드의 실패만 종료)대로 명시(D7).
 
 ## 미결정
 
-- [ ] 역할 분담 (새로 정함)
-- [ ] 새 과제 브랜치 이름(기존 작업과 브랜치로 구분)
-- [ ] 설계서 `docs/RAG-Design_v6.md` 작성과 `docs/DEV_PLAN.md` 갱신
-- [ ] 새 `AGENTS.md`·`CLAUDE.md` 작성
+- [x] 역할 분담 (`AGENTS.md` 담당 표)
+- [x] 새 과제 브랜치 이름: `agent-supervisor`
+- [ ] 설계서 `docs/RAG-Design_v6.md` 작성 (2번)
+- [x] `docs/DEV_PLAN.md` 갱신 (v4, Agent 단계)
+- [x] 새 `AGENTS.md`·`CLAUDE.md` 작성

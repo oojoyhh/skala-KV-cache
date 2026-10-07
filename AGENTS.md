@@ -3,7 +3,7 @@
 이 저장소에서 코드를 작성·수정하는 AI 도구(Claude Code, Codex, Copilot, Cursor 등)는 **작업 전에 이 파일을 따른다.**
 사람 팀원도 같은 규칙을 따른다.
 
-- **기준 문서:** `docs/AGENT_CONTRACT.md`(공통 계약 v2.1)가 최우선이다. 결정 배경은 `docs/AGENT_DECISIONS.md`, 기존 RAG 설계는 `docs/RAG-Design_v5.md`(v6 작성 예정), 기존 개발 계약은 `docs/DEV_PLAN.md`를 본다.
+- **기준 문서:** `docs/AGENT_CONTRACT.md`(공통 계약 v2.2.2)가 최우선이다. 결정 배경은 `docs/AGENT_DECISIONS.md`, 기존 RAG 설계는 `docs/RAG-Design_v5.md`(v6 작성 예정), 계약에 없는 개발 약속(도구 함수·충분성 기준·설정·예외 처리)은 `docs/DEV_PLAN.md`(v4)를 본다.
 - 계약과 이 파일이 다르면 **계약이 우선**이다.
 
 ## 프로젝트
@@ -15,9 +15,9 @@ SW 기술(TurboQuant)과 HW 기술(InfiniGen)을 TRL·시장·이해관계자·�
 
 ## 작업 시작 전
 
-1. 다음 파일을 먼저 읽는다: `docs/AGENT_CONTRACT.md`, `state.py`, `config.py`, `tests/fixtures.py`
+1. 다음 파일을 먼저 읽는다: `docs/AGENT_CONTRACT.md`, `docs/DEV_PLAN.md`, `state.py`, `config.py`, `tests/fixtures.py`
 2. 사용자의 **담당 번호**를 확인한다. 모르면 먼저 묻는다. 아래 "담당과 파일" 표의 파일만 수정한다.
-3. 작업 순서(아래 "작업 순서")에서 내 단계의 선행 작업이 끝났는지 확인한다. 특히 `state.py`·`config.py`가 계약 v2.1대로 바뀌기 전에는 새 타입을 쓰는 코드를 작성하지 않는다.
+3. 작업 순서(아래 "작업 순서")에서 내 단계의 선행 작업이 끝났는지 확인한다. 특히 `state.py`·`config.py`가 계약 v2.2대로 바뀌기 전에는 새 타입을 쓰는 코드를 작성하지 않는다.
 4. Python은 프로젝트 가상환경(`.venv`)을 쓴다. 패키지 설치·실행 전에 가상환경이 활성화됐는지 확인하고, 전역에 설치하지 않는다.
 5. **과제 규정**(평가 기준·제출 형식·파일명·마감 등)은 `docs/private/notion-guide-notes.md`로 확인한다. 이 파일은 비공개로 배포되어 저장소에 없으므로, 없으면 사용자에게 요청한다.
    - 규정을 해석하거나, 요약과 판단이 다르거나, 설계서를 최종 수정할 때는 그 파일 상단의 **원문 주소(교수님 노션)**를 참조한다. 원문과 요약이 다르면 원문이 우선이다.
@@ -48,7 +48,7 @@ SW 기술(TurboQuant)과 HW 기술(InfiniGen)을 TRL·시장·이해관계자·�
 9. **우열 판정·추천 표현을 쓰지 않는다.** "관점에 따라 어떻게 다르게 평가되는가"를 드러낸다. TRL은 "공개 정보 기반 추정"임을 명시한다. 보고서·요약 문장은 한국어로 쓴다.
 10. **재조사 시 쿼리를 바꾼다.** `retry_hint(state, "<관점>")`가 비어 있지 않으면 그 사유를 반영해 다른 쿼리로 검색한다(같은 쿼리 반복 금지).
 11. **범위를 넓히지 않는다.** 계약서·설계서에 없는 기능을 추가하지 않는다. 범위 제외 항목:
-    - 계약 9장: SQLite 영속 복구·새 checkpointer, State 대규모 구조 개편(기존 필드 이름·타입 변경), `references` Reducer 재설계, 보고서 hash, 기존 RAG·웹 검색·TRL 판정 로직 개선, 라우팅용 LLM, 병렬 fan-out, 품질 미달 시 재조사
+    - 계약 9장: SQLite 영속 복구·새 checkpointer, State 대규모 구조 개편(기존 필드 이름·타입 변경), `references` Reducer 재설계, 보고서 hash, 기존 RAG·웹 검색·TRL 판정 로직 개선, 라우팅용 LLM, 병렬 fan-out
     - 기존: Hybrid(sparse) RAG, 별도 TRL/Evidence Guard 에이전트, 온디바이스·장문맥 도메인 병행, 보고서 영문판
     - LLM Judge는 **품질 평가 노드(`agents/quality.py`)에서만** 쓴다(계약 4장).
 12. **비밀값을 다루지 않는다.** API 키(OpenAI·Tavily·LangSmith)를 코드·주석·로그·출력에 쓰지 않는다. 키는 `.env`에서만 읽는다(`config`가 로드함).
@@ -92,14 +92,14 @@ SW 기술(TurboQuant)과 HW 기술(InfiniGen)을 TRL·시장·이해관계자·�
 
 ## 담당과 파일
 
-| # | 담당자 | 역할 | 수정 가능한 파일 | 할 일 (계약 v2.1 기준) |
+| # | 담당자 | 역할 | 수정 가능한 파일 | 할 일 (계약 v2.2.2 기준) |
 |---|---|---|---|---|
-| 1 | 한석휘 | 테스트·검증 | `tests/fixtures.py`, `tests/test_supervisor.py`, (기존) `rag/`, `data/papers/`, `tests/test_rag*.py` | `DUMMY_NODES`가 `node_result`(`dispatch_id` 포함)를 반환하도록 수정, quality 더미 추가, 샘플 State에 `control`·`report_version` 추가. 계약 8장 라우팅 사례 7개 테스트 작성. 새 환경 재현성 검증 |
+| 1 | 한석휘 | 테스트·검증 | `tests/fixtures.py`, `tests/test_supervisor.py`, (기존) `rag/`, `data/papers/`, `tests/test_rag*.py` | `DUMMY_NODES`가 `node_result`(`dispatch_id` 포함)를 반환하도록 수정, quality 더미 추가(`action`·`target_node` 포함), 샘플 State에 `control`·`report_version` 추가. 계약 8장 라우팅 사례 테스트 작성(품질 기반 재조사 경로 포함). 새 환경 재현성 검증 |
 | 2 | 김명하 | 기술 조사 + 설계 문서 | `agents/research.py`, `prompts/research*.md`, `tests/test_research*.py`, `eval/`, `docs/RAG-Design_v6.md` | `node_result` 반환 추가. 설계서 v6 작성(패턴, State D-1, 그래프 D-2, 품질 평가) — 계약서와 일치시킨다 |
 | 3 | 안소유 | 시장·TRL + 검색 | `agents/market.py`, `prompts/market*.md`, `tools/web_search.py`, `tests/test_market*.py`, `tests/test_web_search*.py` | `node_result` 반환, `retry_hint` 반영 확인. (선택) 검색 쿼리·결과 수를 트레이스에 기록 |
-| 4 | 김연주 | 이해관계자·도메인 + 충분성 | `agents/stakeholder.py`, `agents/domain.py`, `agents/check.py`, `prompts/stakeholder*.md`, `prompts/domain*.md`, `tests/test_stakeholder*.py`, `tests/test_domain*.py`, `tests/test_check*.py`, `AGENTS.md`, `CLAUDE.md` | `node_result` 반환. `check_node`는 그래프에서 빠지고 `evaluate_sufficiency`만 helper로 남긴다. `retry_count` 전제 테스트 정리. AI 도구 지침 문서 갱신 |
-| 5 | 윤중우 | 조정 계층 | `orchestration/`, `state.py`, `config.py`, `graph.py`, `app.py`, `llm.py`, `agents/synthesis.py`, `prompts/synthesis*.md`, `tests/test_synthesis*.py`, `requirements.txt`, `.gitignore`, `.env.example`, `docs/AGENT_CONTRACT.md`, `docs/AGENT_DECISIONS.md`, `docs/DEV_PLAN.md` | 계약 1장 라우팅 규칙 구현(`orchestration/supervisor.py`), State·상한 정의, hub-and-spoke 그래프, `trace_id`·`recursion_limit` 전달, LangSmith 연결. `synthesis`는 `node_result` 반환 |
-| 6 | 김효주 | 품질 평가 + 보고서·제출 | `agents/quality.py`, `prompts/quality*.md`, `tests/test_quality*.py`, `agents/report.py`, `prompts/report*.md`, `assets/fonts/`, `tests/test_report*.py`, `README.md` | 계약 4장 Hybrid 품질 평가 구현. 보고서는 `report_md_path`·`report_version`·`node_result` 반환, `quality_result.feedback` 반영, 수집 오류에 `control.node_errors` 포함. README 작성(필수 항목: Pattern·동적 처리·선정 기술·State Schema 7항목), 제출물(zip·트레이스 캡처·PDF) 정리 |
+| 4 | 김연주 | 이해관계자·도메인 + 충분성 | `agents/stakeholder.py`, `agents/domain.py`, `agents/check.py`, `prompts/stakeholder*.md`, `prompts/domain*.md`, `tests/test_stakeholder*.py`, `tests/test_domain*.py`, `tests/test_check*.py` | `node_result` 반환. `check_node`는 그래프에서 빠지고 `evaluate_sufficiency`만 helper로 남긴다. `retry_count` 전제 테스트 정리 |
+| 5 | 윤중우 | 조정 계층 | `orchestration/`, `state.py`, `config.py`, `graph.py`, `app.py`, `llm.py`, `agents/synthesis.py`, `prompts/synthesis*.md`, `tests/test_synthesis*.py`, `requirements.txt`, `.gitignore`, `.env.example`, `docs/AGENT_CONTRACT.md`, `docs/AGENT_DECISIONS.md`, `docs/DEV_PLAN.md`, `AGENTS.md`, `CLAUDE.md` | 계약 1장 라우팅 규칙 구현(`orchestration/supervisor.py`), State·상한 정의, hub-and-spoke 그래프, `trace_id`·`recursion_limit` 전달, LangSmith 연결. `synthesis`는 `node_result` 반환. AI 도구 지침 문서(AGENTS.md·CLAUDE.md) 갱신 |
+| 6 | 김효주 | 품질 평가 + 보고서·제출 | `agents/quality.py`, `prompts/quality*.md`, `tests/test_quality*.py`, `agents/report.py`, `prompts/report*.md`, `assets/fonts/`, `tests/test_report*.py`, `README.md` | 계약 4장 Hybrid 품질 평가 구현(미달 원인별 `action`·`target_node` 판정 포함). 보고서는 `report_md_path`·`report_version`·`node_result` 반환, `quality_result.feedback` 반영, 수집 오류에 `control.node_errors` 포함. README 작성(필수 항목: Pattern·동적 처리·선정 기술·State Schema 7항목), 제출물(zip·트레이스 캡처·PDF) 정리 |
 
 ## 작업 순서 (의존 관계)
 
