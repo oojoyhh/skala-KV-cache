@@ -52,7 +52,7 @@ RECURSION_LIMIT = 2 * (MAX_TOTAL_STEPS + 3) + 10   # LangGraph recursion_limit (
 # ---------------------------------------------------------------------------
 # 관측성 · LangSmith (docs/AGENT_CONTRACT.md 6장)
 # 추적은 .env의 LANGSMITH_TRACING=true + LANGSMITH_API_KEY로 켠다. 키는 코드에 쓰지 않는다.
-# 선택 사항이라 REQUIRED_ENV에 넣지 않는다 (--dummy·키 없는 실행도 동작)
+# 과제 산출물(트레이스 캡처)이라 LANGSMITH_API_KEY는 REQUIRED_ENV에 넣는다. --dummy·--mermaid는 키 없이 동작
 # ---------------------------------------------------------------------------
 LANGSMITH_PROJECT = os.getenv("LANGSMITH_PROJECT", "skala-kv-cache-agent")
 

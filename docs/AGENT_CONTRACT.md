@@ -5,7 +5,7 @@
 > 계약을 바꿔야 하면 코드를 고치지 말고 공통 파일 담당자에게 변경을 제안한다.
 > 결정 배경은 `docs/AGENT_DECISIONS.md`를 본다.
 
-- 상태: **Freeze v2.2** (2026-10-07, 팀 피드백 fix1~fix4 + 가이드 재검토 + 품질 평가 기반 재조사 반영)
+- 상태: **Freeze v2.2.1** (2026-10-07, 팀 피드백 fix1~fix4 + 가이드 재검토 + 품질 평가 기반 재조사 + 셀프 검토 반영)
 - 기존 계약(`docs/DEV_PLAN.md`, `state.py` 타입)은 이 문서와 충돌하지 않는 한 그대로 유효하다.
 
 ---
@@ -59,7 +59,7 @@ supervisor → END
 | 순위 | 조건 | `next_node` | 함께 바꾸는 `control` |
 |---|---|---|---|
 | 1 | 직전 노드가 `failed`이고 `exec_retry_counts[node] < MAX_EXEC_RETRY` | 같은 노드 | `exec_retry_counts[node] += 1` |
-| 2 | 직전 노드가 `failed`이고 실행 재시도 상한 도달 | `synthesis`·`report`·`quality`이면 `END`. 그 외는 아래 규칙으로 계속(그 노드 제외) | `node_status[node] = "skipped"`, `END`이면 `run_status = "exhausted"` |
+| 2 | 직전 노드가 `failed`이고 실행 재시도 상한 도달 | 조사 노드는 아래 규칙으로 계속(그 노드 제외). `synthesis`·`report`는 **산출물이 State에 있으면**(`synthesis` 존재, `report_version > 0`) 아래 규칙으로 계속하고 없으면 `END`. `quality`는 `END` | `node_status[node] = "skipped"`, `END`이면 `run_status = "exhausted"` |
 | 3 | `tech_summary` 없음, `research`가 `skipped` 아님 | `research` | |
 | 4 | 관점 노드 중 아직 실행 안 된(`node_status`에 없음) 것이 있음 | 후보 중 하나 (1-3 선택 방법) | |
 | 5 | `evaluate_sufficiency()` 결과 부족 관점이 있고, 해당 노드가 `skipped` 아니며 `evidence_retry_counts < MAX_AGENT_RETRY` | 후보 중 하나 (1-3 선택 방법) | `evidence_retry_counts[node] += 1` |
@@ -75,7 +75,8 @@ supervisor → END
 - 9a 조건을 못 채우면(재조사 기회 소진·대상 skipped) 9b로 내려가 보고서 재작성으로 처리한다.
 - 규칙 5를 평가할 때마다 `evaluate_sufficiency()` 결과를 `sufficiency`에 저장한다(재조사 노드의 `retry_hint`와 synthesis의 `limitations`가 읽는다).
 - 관점 → 노드: `trl`·`market` → `market`, `stakeholder` → `stakeholder`, `domain` → `domain`. TRL과 시장성이 함께 부족해도 `market` 1회로 센다.
-- 재조사 상한에 닿아 부족한 채 진행하면, 부족 사유는 synthesis가 `limitations`에 옮기고 `E-1005`로 명시한다(기존 동작 유지).
+- 재조사 상한에 닿아 부족한 채 진행하면, 부족 사유는 synthesis가 `limitations`에 옮기고 `E-1005`로 명시한다(기존 동작 유지). 재조사 기회가 남았어도 마무리 모드(`run_status = "exhausted"`)로 멈췄으면 `"[E-1005] 실행 상한 도달로 재조사 중단: ..."`으로 명시한다.
+- synthesis는 LLM 실패 시에도 대체 결과(한계 목록 + E-1002)를 반환하므로, 재시도까지 실패해도 규칙 2에 따라 report로 진행해 보고서를 남긴다.
 - 노드를 고를 때마다 `control.dispatch_id = step_count`, `next_node`, `route_reason`을 쓴다. `END`이면 `next_node = "END"`.
 - `route_reason`은 한국어 한 줄로 쓴다(예: `"stakeholder 근거 부족(negative 0건), 후보 중 근거 최소 → 재조사 1/2"`).
 - 품질 분기(규칙 9a·9b·10)의 `route_reason`은 **"미달 항목 — 품질 평가 권고와 판단 → 선택"** 형식으로, 재조사를 고르지 않았으면 그 이유까지 남긴다. 미달 항목은 `MetricResult.passed`가 False인 항목과 첫 사유다.

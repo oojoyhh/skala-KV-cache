@@ -12,8 +12,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 import config
 import llm
-from state import (PERSPECTIVES, PERSPECTIVE_FIELDS, TECHS, Conflict, Evidence, Perspective, State, Synthesis,
-                   TechName, perspective_evidence)
+from state import (PERSPECTIVE_NODE, PERSPECTIVES, PERSPECTIVE_FIELDS, TECHS, Conflict, Evidence, Perspective, State,
+                   Synthesis, TechName, perspective_evidence)
 
 PERSPECTIVE_NAMES = {"trl": "기술 성숙도(TRL)", "market": "시장성", "stakeholder": "이해관계자", "domain": "도메인 적용"}
 
@@ -55,6 +55,22 @@ def evidence_catalog(state: State) -> dict[str, tuple[TechName, str, Evidence]]:
     return catalog
 
 
+def _retry_capped(state: State, perspective: str) -> bool:
+    """그 관점을 맡은 노드가 근거 부족 재조사 상한에 닿았거나 실행에서 제외됐는가 (계약 1-2 규칙 5)."""
+    control = state.get("control")
+    if not control:  # TODO(5번): retry_count 삭제 시 이 분기 제거 — supervisor 이전 그래프·테스트 호환
+        return state.get("retry_count", 0) > config.MAX_RETRY
+    node = PERSPECTIVE_NODE[perspective]
+    return (control["evidence_retry_counts"].get(node, 0) >= config.MAX_AGENT_RETRY
+            or control["node_status"].get(node) == "skipped")
+
+
+def _node_result(state: State, error: str = "") -> dict:
+    """supervisor에 보고할 실행 결과. LLM·검증 실패(E-1002)는 failed로 보고해 재시도 기회를 받는다."""
+    dispatch_id = state.get("control", {}).get("dispatch_id", 0)
+    return {"node": "synthesis", "dispatch_id": dispatch_id, "status": "failed" if error else "success", "error": error}
+
+
 def _limitations(state: State) -> list[str]:
     suff = state.get("sufficiency", {})
     reasons = suff.get("reasons", {})
@@ -63,9 +79,15 @@ def _limitations(state: State) -> list[str]:
     for p in missing:
         if p not in reasons:
             limits.append(f"{PERSPECTIVE_NAMES[p]} 충분성 확인 불가: 판정 또는 부족 사유 미제공")
-    if missing and state.get("retry_count", 0) > config.MAX_RETRY:
-        names = ", ".join(PERSPECTIVE_NAMES[p] for p in missing)
+    capped = [p for p in missing if _retry_capped(state, p)]
+    if capped:
+        names = ", ".join(PERSPECTIVE_NAMES[p] for p in capped)
         limits.append(f"[E-1005] 재조사 상한 도달: {names} 근거 부족 상태로 종합")
+    # 재조사 기회가 남았어도 전체 실행 상한(마무리 모드)으로 멈춘 경우 (supervisor가 run_status를 exhausted로 둠)
+    stopped = [p for p in missing if p not in capped]
+    if stopped and state.get("control", {}).get("run_status") == "exhausted":
+        names = ", ".join(PERSPECTIVE_NAMES[p] for p in stopped)
+        limits.append(f"[E-1005] 실행 상한 도달로 재조사 중단: {names} 근거 부족 상태로 종합")
     for tech in TECHS:
         for limit in state.get("tech_summary", {}).get(tech, {}).get("limitations", []):
             if limit:
@@ -143,7 +165,7 @@ def synthesis_node(state: State, *, client: SynthesisClient | None = None) -> di
                   for tech in TECHS} for p in PERSPECTIVES}
     if not catalog:
         synthesis["limitations"].append("[E-1001] 관점별 근거가 없어 일치·상충을 종합하지 못함")
-        return {"synthesis": synthesis}
+        return {"synthesis": synthesis, "node_result": _node_result(state)}
 
     try:
         prompt = (llm.load_prompt("synthesis") + "\n\n입력 State (JSON):\n"
@@ -154,7 +176,7 @@ def synthesis_node(state: State, *, client: SynthesisClient | None = None) -> di
     except (llm.LLMError, ValidationError):
         # 외부 예외 원문은 키·요청 내용이 포함될 수 있으므로 보고서에 복사하지 않는다.
         synthesis["limitations"].append("[E-1002] 평가 종합 LLM 호출 또는 구조화 출력 검증 실패")
-        return {"synthesis": synthesis}
+        return {"synthesis": synthesis, "node_result": _node_result(state, "E-1002 평가 종합 LLM 호출 또는 구조화 출력 검증 실패")}
 
     rejected = False
     for kind in ("agreements", "conflicts"):
@@ -178,4 +200,4 @@ def synthesis_node(state: State, *, client: SynthesisClient | None = None) -> di
                     synthesis["conflicts"].append(conflict)
     if rejected:
         synthesis["limitations"].append("입력 근거 목록에 없거나 기술·관점이 맞지 않는 근거 ID를 쓴 종합 항목을 제외함")
-    return {"synthesis": synthesis}
+    return {"synthesis": synthesis, "node_result": _node_result(state)}
