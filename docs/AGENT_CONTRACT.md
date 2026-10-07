@@ -1,11 +1,11 @@
-# Agent 과제 공통 계약 (Supervisor 패턴) — v2.2
+# Agent 과제 공통 계약 (Supervisor 패턴) — v2.2.2
 
 > **이 문서를 AI 도구에 작업 지시 맨 위에 붙여 넣는다.**
 > "이 계약을 절대 변경하지 말고, 내 담당 파일만 수정하라."
 > 계약을 바꿔야 하면 코드를 고치지 말고 공통 파일 담당자에게 변경을 제안한다.
 > 결정 배경은 `docs/AGENT_DECISIONS.md`를 본다.
 
-- 상태: **Freeze v2.2.1** (2026-10-07, 팀 피드백 fix1~fix4 + 가이드 재검토 + 품질 평가 기반 재조사 + 셀프 검토 반영)
+- 상태: **Freeze v2.2.2** (2026-10-07, 팀 피드백 fix1~fix4 + 가이드 재검토 + 품질 평가 기반 재조사 + 셀프 검토 + 1번 테스트 피드백 반영)
 - 기존 계약(`docs/DEV_PLAN.md`, `state.py` 타입)은 이 문서와 충돌하지 않는 한 그대로 유효하다.
 
 ---
@@ -46,11 +46,13 @@ supervisor → END
 
 | 순위 | 조건 | `next_node` |
 |---|---|---|
-| F1 | 직전 노드가 `failed` | `END` |
-| F2 | `synthesis` 없음 또는 `"synthesis" in stale`, `"synthesis"` 미시도 | `synthesis` |
-| F3 | `report_version == 0` 또는 `"report" in stale`, `"report"` 미시도 | `report` |
-| F4 | 보고서 있음, `quality_result.evaluated_report_version != report_version`, `"quality"` 미시도 | `quality` |
+| F1 | 직전 노드가 **마무리 모드에서 시도한 노드**(`finalize_tried`에 있음)이고 `failed` | `END` |
+| F2 | `synthesis` 없음 또는 `"synthesis" in stale`, `"synthesis"` 미시도, `skipped` 아님 | `synthesis` |
+| F3 | `report_version == 0` 또는 `"report" in stale`, `"report"` 미시도, `skipped` 아님 | `report` |
+| F4 | 보고서 있음, `quality_result.evaluated_report_version != report_version`, `"quality"` 미시도, `skipped` 아님 | `quality` |
 | F5 | 그 외 | `END` |
+
+- F1: 마무리 모드 진입 직전에 조사 노드가 실패한 경우는 F1이 아니다. 그대로 F2부터 진행해 보고서를 남긴다(상한 직전 실패 하나로 보고서 없이 끝나는 것 방지).
 
 마무리 모드는 항상 `run_status = "exhausted"`로 끝난다. 마무리 모드의 추가 실행은 최대 3회라 종료가 보장된다.
 
@@ -67,7 +69,7 @@ supervisor → END
 | 7 | `report_version == 0` 또는 `"report" in stale` | `report` | |
 | 8 | `quality_result` 없음 또는 `evaluated_report_version != report_version` | `quality` | |
 | 9a | `quality_result.passed == False`, `action == "research"`, `quality_research_count < MAX_QUALITY_RESEARCH`, `target_node`가 관점 노드이고 `skipped` 아님 | `target_node` (품질 평가 기반 재조사) | `quality_research_count += 1`, `stale = ["synthesis", "report"]`, `sufficiency`에 품질 사유 기록(1-4) |
-| 9b | `quality_result.passed == False`이고 `report_retry_count < MAX_REPORT_RETRY` | `report` | `report_retry_count += 1` |
+| 9b | `quality_result.passed == False`, `report`가 `skipped` 아님, `report_retry_count < MAX_REPORT_RETRY` | `report` | `report_retry_count += 1` |
 | 10 | 그 외 | `END` | 통과면 `run_status = "completed"`, 아니면 `"exhausted"` |
 
 - `skipped`된 노드는 **어떤 규칙에서도** 다시 고르지 않는다.
