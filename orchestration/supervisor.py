@@ -16,6 +16,7 @@ import config
 from agents.check import evaluate_sufficiency
 from state import (
     EVIDENCE_RETRY_NODES,
+    PERSPECTIVE_NODE,
     PERSPECTIVES,
     TECHS,
     ControlState,
@@ -26,8 +27,6 @@ from state import (
 
 END = "END"  # graph.py가 langgraph END로 연결한다
 
-# 관점 → 재실행할 노드 (TRL과 시장성은 같은 market 노드가 만든다)
-PERSPECTIVE_NODE = {"trl": "market", "market": "market", "stakeholder": "stakeholder", "domain": "domain"}
 # 관점 후보의 근거 개수가 같을 때만 쓰는 순서 (워크플로 순서가 아니라 재현성용 동점 처리)
 TIE_BREAK_ORDER = EVIDENCE_RETRY_NODES
 # 실행 재시도 상한에 닿으면 종료하는 마무리 노드
@@ -104,6 +103,15 @@ def _needs(state: State, control: ControlState, node: str, has_output: bool) -> 
     if node in control["stale"]:
         return status != "skipped"
     return not has_output and status not in ("success", "skipped")
+
+
+def _has_output(state: State, node: str) -> bool:
+    """마무리 노드의 산출물이 State에 있는가. quality는 결과를 이어 쓸 수 없으므로 항상 False."""
+    if node == "synthesis":
+        return bool(state.get("synthesis"))
+    if node == "report":
+        return state.get("report_version", 0) > 0
+    return False
 
 
 def _quality_stale(state: State) -> bool:
@@ -199,9 +207,10 @@ def decide(state: State) -> tuple[str, ControlState, SufficiencyCheck | None]:
             control["exec_retry_counts"][last] += 1
             return choose(last, f"{last} 실행 실패({error}) → 재시도 {control['exec_retry_counts'][last]}/{config.MAX_EXEC_RETRY}")
         control["node_status"][last] = "skipped"
-        if last in TERMINAL_NODES:
+        # synthesis·report는 실패해도 쓸 수 있는 산출물이 State에 있으면 계속 진행해 보고서를 남긴다.
+        if last in TERMINAL_NODES and not _has_output(state, last):
             control["run_status"] = "exhausted"
-            return choose(END, f"{last} 실행 재시도 상한 도달 → 종료")
+            return choose(END, f"{last} 실행 재시도 상한 도달, 산출물 없음 → 종료")
 
     # 3. 기술 조사
     if _needs(state, control, "research", bool(state.get("tech_summary"))):

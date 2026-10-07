@@ -134,6 +134,8 @@ NodeName = Literal["research", "market", "stakeholder", "domain", "synthesis", "
 NODES: tuple[NodeName, ...] = ("research", "market", "stakeholder", "domain", "synthesis", "report", "quality")
 # 근거 부족 재조사 대상 노드 (evidence_retry_counts 키)
 EVIDENCE_RETRY_NODES: tuple[NodeName, ...] = ("market", "stakeholder", "domain")
+# 관점 → 그 관점 근거를 만드는 노드 (TRL과 시장성은 같은 market 노드가 만든다)
+PERSPECTIVE_NODE: dict[Perspective, NodeName] = {"trl": "market", "market": "market", "stakeholder": "stakeholder", "domain": "domain"}
 
 
 class NodeResult(TypedDict):             # 하위 노드 → supervisor 실행 결과 보고

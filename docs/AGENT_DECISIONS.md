@@ -74,7 +74,7 @@ Agent 과제(Multi-Agent Orchestration)에서 팀이 내린 큰 결정과 그 �
     - `exec_retry_counts`: 실행 실패, 7개 노드 모두, 상한 `MAX_EXEC_RETRY`
     - `evidence_retry_counts`: 근거 부족 재조사, market·stakeholder·domain, 상한 `MAX_AGENT_RETRY`
     - `report_retry_count`: 품질 미달 재작성, 상한 `MAX_REPORT_RETRY`
-  - 실행 재시도 상한에 닿은 노드는 `skipped`로 두고 **어떤 규칙에서도** 다시 고르지 않는다. 조사 노드는 제외하고 진행하고, synthesis·report·quality는 `END`(`exhausted`)로 끝낸다.
+  - 실행 재시도 상한에 닿은 노드는 `skipped`로 두고 **어떤 규칙에서도** 다시 고르지 않는다. 조사 노드는 제외하고 진행한다. synthesis·report는 쓸 수 있는 산출물이 State에 있으면 계속 진행하고(PR #35 셀프 검토: LLM 일시 장애로 보고서가 생성되지 않는 것을 막음), 없으면 `END`(`exhausted`). quality는 `END`.
   - supervisor가 노드를 부를 때 `dispatch_id`(= 그 시점의 `step_count`)를 발급하고, 노드는 `node_result.dispatch_id`로 그대로 돌려준다. 노드 이름과 `dispatch_id`가 모두 맞아야 유효한 결과로 본다.
   - 최초 진입(`next_node == ""`)에서는 결과 검증을 건너뛴다.
   - 노드별 오류는 `control.node_errors`에 남기고, 보고서의 수집 오류 절이 이 값도 읽는다.
@@ -167,6 +167,7 @@ Agent 과제(Multi-Agent Orchestration)에서 팀이 내린 큰 결정과 그 �
   - `node_errors` 추가(D5), supervisor 위치를 `orchestration/`으로 변경(D10)
 - **v2.1:** 가이드 재검토 반영. 스텝 상한이 보고서 진입 조건이 아님을 명시(D7), 재현성 범위 명시(D9), 필수 목차 형식 검사 추가(D6), 결정 로그 항목 대응 명시(D4).
 - **v2.2:** 팀원·교수님 피드백 반영. 품질 미달 원인별 조치(`action`·`target_node`), 품질 기반 재조사 1회(`MAX_QUALITY_RESEARCH`, `quality_research_count`), 재생성 표시(`stale`), `MAX_TOTAL_STEPS` 24(D6, D7, D8).
+- **v2.2.1:** 실행 재시도 상한에 닿은 synthesis·report도 산출물이 있으면 진행(D5), 실행 상한으로 재조사가 중단되면 E-1005로 명시.
 
 ## 미결정
 
