@@ -282,6 +282,8 @@ def _drop_recommendations(text: str) -> str:
 ERROR_CODE = re.compile(r"\[E-10\d\d\]")
 RESULT_NAMES = {"tech_summary": "기술 조사", "trl_result": "TRL", "market_result": "시장성",
                 "stakeholder_result": "이해관계자", "domain_result": "도메인"}
+NODE_NAMES = {"research": "기술 조사", "market": "시장·TRL", "stakeholder": "이해관계자",
+              "domain": "도메인", "synthesis": "평가 종합", "report": "보고서 생성", "quality": "품질 평가"}
 
 
 def collect_errors(state: State) -> list[str]:
@@ -301,6 +303,9 @@ def collect_errors(state: State) -> list[str]:
     for key, name in RESULT_NAMES.items():
         for tech, result in (state.get(key) or {}).items():
             walk(result, f"{name}({tech})")
+    # 결과 없이 실패한 노드는 페이로드에 E-코드가 남지 않으므로 control.node_errors도 읽는다 (계약 §3-1)
+    for node, error in ((state.get("control") or {}).get("node_errors") or {}).items():
+        found.append(f"{NODE_NAMES.get(node, node)}: {' '.join(str(error).split())[:160]}")
     return list(dict.fromkeys(found))
 
 
@@ -493,6 +498,7 @@ def build_blocks(state: State, generate) -> list[tuple]:
     cites = Citations(state.get("references", []), evidence_source_ids(state))
     errors = collect_errors(state)
     techs_of = doc_techs(state, cites)
+    feedback = feedback_note(state)
     body = []
     for level, title, length, instruction, pick in CHAPTERS:
         body.append((f"h{level}", title))
@@ -510,8 +516,8 @@ def build_blocks(state: State, generate) -> list[tuple]:
         elif title.startswith(EVIDENCE_CHAPTERS) and not _has_claims(data):
             text = NO_SYNTHESIS if title.startswith("5.") else NO_EVIDENCE
         else:
-            text = _drop_recommendations(
-                _keep_same_tech_citations(_write(generate, head, title, length, instruction, data), cites, techs_of))
+            text = _drop_recommendations(_keep_same_tech_citations(
+                _write(generate, head, title, length, instruction + feedback, data), cites, techs_of))
         if title.startswith("4-1"):
             body.append(("fixed", trl_line(state)))
         if title.startswith("4-1") and "공개 정보 기반 추정" not in text:
@@ -672,11 +678,32 @@ def fill_missing_dates(references: list, fetch=_published_date) -> list:
             for r in references]
 
 
+def feedback_note(state: State) -> str:
+    """재작성일 때 품질 평가 피드백을 챕터 지시에 덧붙인다 (계약 §4: report가 feedback을 읽는다)."""
+    feedback = (state.get("quality_result") or {}).get("feedback") or []
+    if not feedback:
+        return ""
+    return ("\n[직전 보고서의 품질 평가 미달 사유 — 이번 작성에서 고칠 것, 분량은 늘리지 말 것]\n"
+            + "\n".join(f"- {f}" for f in feedback[:12]))
+
+
 def report_node(state: State, generate_fn=None, fetch_fn=None) -> dict:
-    state = {**state, "references": fill_missing_dates(state.get("references", []), fetch_fn or _published_date)}
-    blocks = build_blocks(state, generate_fn or llm.generate)
-    os.makedirs(os.path.dirname(config.REPORT_PATH), exist_ok=True)
-    render_pdf(blocks, config.REPORT_PATH)
-    with open(os.path.splitext(config.REPORT_PATH)[0] + ".md", "w", encoding="utf-8") as f:
-        f.write(to_markdown(blocks))
-    return {"report_path": config.REPORT_PATH}
+    """계약 §3: report_path·report_md_path·report_version·node_result를 반환한다."""
+    dispatch_id = (state.get("control") or {}).get("dispatch_id", 0)
+    node_result = {"node": "report", "dispatch_id": dispatch_id, "status": "success", "error": ""}
+    md_path = os.path.splitext(config.REPORT_PATH)[0] + ".md"
+    try:
+        state = {**state, "references": fill_missing_dates(state.get("references", []), fetch_fn or _published_date)}
+        blocks = build_blocks(state, generate_fn or llm.generate)
+        os.makedirs(os.path.dirname(config.REPORT_PATH), exist_ok=True)
+        render_pdf(blocks, config.REPORT_PATH)
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(to_markdown(blocks))
+    except (OSError, ValueError, FileNotFoundError) as exc:
+        return {"node_result": {**node_result, "status": "failed", "error": f"E-1002 보고서 생성 실패: {exc}"[:200]}}
+    return {
+        "report_path": config.REPORT_PATH,
+        "report_md_path": md_path,
+        "report_version": state.get("report_version", 0) + 1,
+        "node_result": node_result,
+    }

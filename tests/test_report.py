@@ -3,6 +3,7 @@
 LLM 대신 가짜 generate를 주입한다. API 키 없이 동작한다.
 """
 
+import os
 import re
 
 import pytest
@@ -32,7 +33,10 @@ def _text(blocks) -> str:
 def test_report_node_writes_pdf(tmp_path, monkeypatch, sufficient):
     monkeypatch.setattr(config, "REPORT_PATH", str(tmp_path / config.REPORT_FILENAME))
     out = report_node(sample_state_after_eval(sufficient), generate_fn=fake_generate)
-    assert out == {"report_path": config.REPORT_PATH}
+    assert out["report_path"] == config.REPORT_PATH
+    assert out["report_md_path"] == os.path.splitext(config.REPORT_PATH)[0] + ".md"
+    assert out["report_version"] == 1                      # 계약 §2: report 실행마다 +1
+    assert out["node_result"] == {"node": "report", "dispatch_id": 0, "status": "success", "error": ""}
     assert (tmp_path / config.REPORT_FILENAME).stat().st_size > 1000
 
 
