@@ -1,6 +1,7 @@
 """공유 State 정의 — 모든 노드가 이 파일의 타입만 import해서 쓴다.
 
-기준: 설계서 docs/RAG-Design_v5.md  D-1 State 설계
+기준: docs/AGENT_CONTRACT.md 2장 (Supervisor 계약 v2.2)
+      기존 타입은 설계서 docs/RAG-Design_v5.md  D-1 State 설계를 그대로 따른다.
 변경은 5번(그래프 총괄)만 한다. 필드를 추가·변경해야 하면 직접 고치지 말고 요청할 것.
 
 규칙
@@ -10,9 +11,13 @@
 - 출처는 리스트 인덱스가 아니라 source_id로 참조한다.
   웹: "web:<sha1(정규화 URL)[:10]>"   논문 청크: "arxiv:<id>#p<page>"
 - references는 reducer(operator.add)로 누적되므로, 노드는 "이번에 새로 쓴 출처"만 반환한다.
+- 모든 하위 노드는 성공이든 실패든 node_result를 반드시 반환한다.
+  node_result.dispatch_id에는 state["control"]["dispatch_id"]를 그대로 복사한다.
+- control은 supervisor만 수정한다. 하위 노드는 control을 읽기만 하고 반환하지 않는다.
 """
 
 import operator
+import uuid
 from typing import Annotated, Literal, TypedDict
 
 # ---------------------------------------------------------------------------
@@ -122,27 +127,91 @@ class Synthesis(TypedDict):            # 6. 평가 종합
 
 
 # ---------------------------------------------------------------------------
+# Supervisor 제어 (계약 v2.2 2장)
+# ---------------------------------------------------------------------------
+# supervisor가 고르는 하위 노드 7개
+NodeName = Literal["research", "market", "stakeholder", "domain", "synthesis", "report", "quality"]
+NODES: tuple[NodeName, ...] = ("research", "market", "stakeholder", "domain", "synthesis", "report", "quality")
+# 근거 부족 재조사 대상 노드 (evidence_retry_counts 키)
+EVIDENCE_RETRY_NODES: tuple[NodeName, ...] = ("market", "stakeholder", "domain")
+# 관점 → 그 관점 근거를 만드는 노드 (TRL과 시장성은 같은 market 노드가 만든다)
+PERSPECTIVE_NODE: dict[Perspective, NodeName] = {"trl": "market", "market": "market", "stakeholder": "stakeholder", "domain": "domain"}
+
+
+class NodeResult(TypedDict):             # 하위 노드 → supervisor 실행 결과 보고
+    node: NodeName
+    dispatch_id: int                     # state["control"]["dispatch_id"]를 그대로 돌려준다
+    status: Literal["success", "failed"]
+    error: str                           # 실패 시 "E-xxxx 사유", 성공 시 ""
+
+
+class MetricResult(TypedDict):           # 품질 항목 하나의 판정
+    rule_passed: bool
+    judge_passed: bool | None            # Judge를 쓰지 않거나 판정 불가면 None
+    passed: bool                         # rule_passed and judge_passed is not False
+    reasons: list[str]                   # 미달 사유(한국어, 문제 문장·절 포함)
+
+
+class QualityResult(TypedDict):          # quality 노드 산출물
+    groundedness: MetricResult
+    neutrality: MetricResult
+    bias_control: MetricResult
+    perspective_coverage: MetricResult
+    page_count: int
+    page_limit_passed: bool              # page_count <= MAX_REPORT_PAGES
+    required_sections_passed: bool       # SUMMARY·REFERENCE 절 존재
+    passed: bool                         # 네 항목 passed and page_limit_passed and required_sections_passed
+    feedback: list[str]                  # report 재작성 입력
+    evaluated_report_version: int        # 평가한 report_version
+    action: Literal["pass", "rewrite", "research"]  # 품질 노드의 권고 (다음 노드는 supervisor가 정함)
+    target_node: str                     # action == "research"일 때 market | stakeholder | domain, 그 외 ""
+
+
+class ControlState(TypedDict):           # supervisor만 수정
+    next_node: str                       # "" (최초) | 노드 이름 | "END"
+    route_reason: str
+    dispatch_id: int                     # 노드 호출마다 step_count 값으로 갱신
+    step_count: int                      # 하위 노드 실행 횟수
+    exec_retry_counts: dict[str, int]    # 실행 실패 재시도. 7개 노드 모두 0으로 시작
+    evidence_retry_counts: dict[str, int]  # 근거 부족 재조사. market·stakeholder·domain
+    report_retry_count: int              # 품질 미달 재작성
+    node_status: dict[str, str]          # "success" | "failed" | "skipped"
+    node_errors: dict[str, str]          # 노드별 마지막 오류
+    last_error: str
+    finalize_tried: list[str]            # 마무리 모드에서 시도한 노드
+    quality_research_count: int          # 품질 평가 기반 재조사 횟수 (실행 전체)
+    stale: list[str]                     # 산출물이 있어도 다시 만들어야 하는 노드 (synthesis·report)
+    trace_id: str                        # LangSmith metadata.trace_id와 같은 값
+    run_status: Literal["running", "completed", "exhausted"]
+
+
+# ---------------------------------------------------------------------------
 # 그래프 State
 # ---------------------------------------------------------------------------
 class State(TypedDict, total=False):
-    # 입력
+    # ── 1. 입력 ───────────────────────────────────────────
     tech_sw: TechName
     tech_hw: TechName
     domain: str
-    # 1. 기술 조사
-    tech_summary: dict[TechName, TechSummary]
-    # 2~4. 평가 (Fan-out, 키 분리)
-    trl_result: dict[TechName, TRLEstimate]        # 시장 평가 노드가 market_result와 함께 반환
-    market_result: dict[TechName, MarketResult]
-    stakeholder_result: dict[TechName, StakeholderResult]
-    domain_result: dict[TechName, DomainResult]
-    # 5. 충분성 검사 / 루프 제어
-    sufficiency: SufficiencyCheck
-    retry_count: int
-    # 6~7. 종합·보고서
-    synthesis: Synthesis
-    references: Annotated[list[Reference], operator.add]
-    report_path: str
+    # ── 2. Agent 페이로드 (작업 결과) ─────────────────────────
+    tech_summary: dict[TechName, TechSummary]      # research
+    trl_result: dict[TechName, TRLEstimate]        # market (market_result와 함께 반환)
+    market_result: dict[TechName, MarketResult]    # market
+    stakeholder_result: dict[TechName, StakeholderResult]  # stakeholder
+    domain_result: dict[TechName, DomainResult]    # domain
+    sufficiency: SufficiencyCheck                  # supervisor가 evaluate_sufficiency() 결과를 저장
+    retry_count: int  # 계약 v2.1에서 삭제 예정 — control.evidence_retry_counts로 대체. 각 담당 반영 후 5번이 제거
+    synthesis: Synthesis                           # synthesis
+    references: Annotated[list[Reference], operator.add]  # 모든 조사 노드 (reducer로 누적)
+    report_path: str                     # report — 기존 이름 유지 (PDF)
+    report_md_path: str                  # report — 품질 평가 원본 (보고서 전문은 State에 넣지 않음)
+    report_version: int                  # report — 실행마다 +1 (0 = 보고서 없음)
+    # ── 3. 노드 실행 결과 ─────────────────────────────────
+    node_result: NodeResult              # 모든 하위 노드 → supervisor
+    # ── 4. 평가 ───────────────────────────────────────────
+    quality_result: QualityResult        # quality
+    # ── 5. 제어 (supervisor 전용) ───────────────────────────
+    control: ControlState
 
 
 def make_initial_state() -> State:
@@ -151,8 +220,26 @@ def make_initial_state() -> State:
         "tech_sw": TECH_SW,
         "tech_hw": TECH_HW,
         "domain": DOMAIN,
-        "retry_count": 0,
+        "retry_count": 0,  # 계약 v2.1에서 삭제 예정 — control.evidence_retry_counts로 대체. 각 담당 반영 후 5번이 제거
         "references": [],
+        "report_version": 0,
+        "control": {
+            "next_node": "",
+            "route_reason": "",
+            "dispatch_id": 0,
+            "step_count": 0,
+            "exec_retry_counts": {n: 0 for n in NODES},
+            "evidence_retry_counts": {n: 0 for n in EVIDENCE_RETRY_NODES},
+            "report_retry_count": 0,
+            "node_status": {},
+            "node_errors": {},
+            "last_error": "",
+            "finalize_tried": [],
+            "quality_research_count": 0,
+            "stale": [],
+            "trace_id": uuid.uuid4().hex,
+            "run_status": "running",
+        },
     }
 
 

@@ -51,7 +51,9 @@ def test_contract_sources_and_input_unchanged(sufficient):
     before = copy.deepcopy(state)
     client = client_for(state)
     result = synthesis_node(state, client=client)
-    assert set(result) == {"synthesis"}
+    assert set(result) == {"synthesis", "node_result"}
+    assert result["node_result"] == {"node": "synthesis", "dispatch_id": state["control"]["dispatch_id"],
+                                     "status": "success", "error": ""}
     out = result["synthesis"]
     assert set(out) == {"agreements", "conflicts", "neutrality_note", "limitations"}
     assert len(out["agreements"]) == len(out["conflicts"]) == 1
@@ -72,28 +74,43 @@ def test_contract_sources_and_input_unchanged(sufficient):
         assert "negative" not in payload["stance_counts"]["stakeholder"]["InfiniGen"]
 
 
-@pytest.mark.parametrize("retry_count,expect_cap", [(0, False), (2, False), (3, True)])
-def test_retry_limit_uses_graph_boundary(retry_count, expect_cap):
-    state = sample_state_after_eval(False)
-    state["retry_count"] = retry_count
+@pytest.mark.parametrize("retries,status,expect_cap", [
+    (0, "success", False), (config.MAX_AGENT_RETRY - 1, "success", False),
+    (config.MAX_AGENT_RETRY, "success", True), (0, "skipped", True),
+])
+def test_retry_limit_uses_supervisor_counters(retries, status, expect_cap):
+    state = sample_state_after_eval(False)          # stakeholder(InfiniGen) 근거 부족
+    state["control"]["evidence_retry_counts"]["stakeholder"] = retries
+    state["control"]["node_status"]["stakeholder"] = status
     out = synthesis_node(state, client=client_for(state))["synthesis"]
     assert any("E-1005" in text for text in out["limitations"]) is expect_cap
 
 
+def test_step_cap_stop_is_reported_when_retries_remain():
+    state = sample_state_after_eval(False)          # stakeholder 부족, 재조사 기회 남음
+    state["control"]["run_status"] = "exhausted"    # supervisor 마무리 모드
+    out = synthesis_node(state, client=client_for(state))["synthesis"]
+    assert any(t.startswith("[E-1005] 실행 상한 도달로 재조사 중단") and "이해관계자" in t for t in out["limitations"])
+    assert not any(t.startswith("[E-1005] 재조사 상한 도달") for t in out["limitations"])
+
+
 def test_successful_sufficiency_does_not_report_cap():
     state = sample_state_after_eval(True)
-    state["retry_count"] = config.MAX_RETRY + 1
+    state["control"]["evidence_retry_counts"] = {n: config.MAX_AGENT_RETRY for n in ("market", "stakeholder", "domain")}
     out = synthesis_node(state, client=client_for(state))["synthesis"]
     assert not any("E-1005" in text for text in out["limitations"])
 
 
 def test_upstream_limits_errors_and_uncertainty_survive_api_failure():
     state = sample_state_after_eval(False)
-    state["retry_count"] = config.MAX_RETRY + 1
+    state["control"]["evidence_retry_counts"]["stakeholder"] = config.MAX_AGENT_RETRY
     state["tech_summary"]["TurboQuant"]["limitations"] = ["[E-1003] PDF 로딩 실패"]
     state["market_result"]["InfiniGen"]["summary"] = "[E-1002] 검색 호출 실패"
     client = FakeClient(llm.LLMError("민감한 예외 내용"))
-    out = synthesis_node(state, client=client)["synthesis"]
+    result = synthesis_node(state, client=client)
+    assert result["node_result"]["status"] == "failed" and result["node_result"]["error"].startswith("E-1002")
+    assert "민감한 예외 내용" not in result["node_result"]["error"]
+    out = result["synthesis"]
     assert out["agreements"] == out["conflicts"] == []
     text = "\n".join(out["limitations"])
     for expected in ("PDF 로딩 실패", "검색 호출 실패", "E-1005", "공개 정보 기반 추정", "반론 근거 미확인"):
@@ -181,14 +198,20 @@ def test_graph_real_synthesis_reaches_report(always_insufficient):
     client = client_for(sample_state_after_eval())
     overrides = {
         "synthesis": partial(synthesis_node, client=client),
-        "report": lambda state: {"report_path": "test-report-no-file.pdf"},
+        "report": lambda state: {"report_path": "test-report-no-file.pdf", "report_version": state.get("report_version", 0) + 1,
+                                 "node_result": {"node": "report", "dispatch_id": state["control"]["dispatch_id"],
+                                                 "status": "success", "error": ""}},
     }
     if always_insufficient:
-        overrides["stakeholder"] = lambda state: sample_stakeholder_output("InfiniGen")
+        overrides["stakeholder"] = lambda state: {
+            **sample_stakeholder_output("InfiniGen"),
+            "node_result": {"node": "stakeholder", "dispatch_id": state["control"]["dispatch_id"], "status": "success", "error": ""}}
     final = build_graph(dummy=True, overrides=overrides).invoke(make_initial_state())
     assert final["report_path"] == "test-report-no-file.pdf"
     assert len(client.prompts) == 1
-    assert final["retry_count"] == (config.MAX_RETRY + 1 if always_insufficient else 1)
+    control = final["control"]
+    assert control["evidence_retry_counts"]["stakeholder"] == (config.MAX_AGENT_RETRY if always_insufficient else 1)
+    assert control["node_status"]["synthesis"] == "success" and control["run_status"] == "completed"
     assert any("E-1005" in text for text in final["synthesis"]["limitations"]) is always_insufficient
 
 
@@ -311,3 +334,23 @@ def test_report_rejects_partly_unresolvable_synthesis_citations():
     out = _synthesis_for_report(state["synthesis"], cites, allowed)
     assert out["agreements"] == []
     assert len(out["conflicts"]) == 1
+
+
+def test_graph_continues_to_report_when_synthesis_keeps_failing():
+    """synthesis가 재시도까지 실패해도 대체 결과가 있으면 보고서까지 간다 (계약 1-2 규칙 2)."""
+    from graph import build_graph
+
+    client = FakeClient(llm.LLMError("API 장애"))
+    overrides = {
+        "synthesis": partial(synthesis_node, client=client),
+        "report": lambda state: {"report_path": "test-report-no-file.pdf", "report_version": state.get("report_version", 0) + 1,
+                                 "node_result": {"node": "report", "dispatch_id": state["control"]["dispatch_id"],
+                                                 "status": "success", "error": ""}},
+    }
+    final = build_graph(dummy=True, overrides=overrides).invoke(make_initial_state())
+    control = final["control"]
+    assert control["exec_retry_counts"]["synthesis"] == config.MAX_EXEC_RETRY
+    assert control["node_status"]["synthesis"] == "skipped"
+    assert control["node_errors"]["synthesis"].startswith("E-1002")
+    assert final["report_path"] == "test-report-no-file.pdf"
+    assert any("E-1002" in t for t in final["synthesis"]["limitations"])
