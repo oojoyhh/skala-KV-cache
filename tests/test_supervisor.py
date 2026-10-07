@@ -232,26 +232,43 @@ def test_finalize_attempts_each_terminal_node_once():
     assert state["control"]["run_status"] == "exhausted"
 
 
-@pytest.mark.parametrize("already_finalizing", [False, True])
-def test_finalize_f1_ends_after_previous_failure(already_finalizing):
+@pytest.mark.parametrize("node", ["synthesis", "report", "quality"])
+def test_finalize_f1_ends_after_attempted_finalize_node_failure(node):
     state = sample_state_after_eval()
-    node = "synthesis" if already_finalizing else "research"
-    state["control"]["step_count"] = config.MAX_TOTAL_STEPS - 1
-    if already_finalizing:
-        state["control"]["finalize_tried"] = [node]
+    state["control"]["step_count"] = config.MAX_TOTAL_STEPS
+    state["control"]["finalize_tried"] = [node]
     _last_result(state, node, failed=True)
-    # TODO(5번 요청): F1은 finalize_tried 포함 여부와 무관하게 직전 실패 시 END.
+    # F1은 마무리 모드에서 이미 시도한 노드의 실패에만 적용한다.
     next_node, control, _ = decide(state)
     assert next_node == END
     assert control["run_status"] == "exhausted"
+    assert control["finalize_tried"] == [node]
+    assert control["step_count"] == config.MAX_TOTAL_STEPS + 1
     assert sum(control["exec_retry_counts"].values()) == 0
+
+
+@pytest.mark.parametrize("node", ["research", *EVIDENCE_RETRY_NODES])
+def test_investigation_failure_at_step_limit_proceeds_to_synthesis(node):
+    state = sample_state_after_eval()
+    state["control"]["step_count"] = config.MAX_TOTAL_STEPS - 1
+    _last_result(state, node, failed=True)
+    before = copy.deepcopy(state)
+    # 상한 직전 조사 실패는 F1이 아니므로 보고서 생성을 위해 F2로 진행한다.
+    next_node, control, _ = decide(state)
+    assert next_node == "synthesis"
+    assert control["run_status"] == "exhausted"
+    assert control["node_status"][node] == "failed"
+    assert control["node_errors"][node] == state["node_result"]["error"]
+    assert control["finalize_tried"] == ["synthesis"]
+    assert control["step_count"] == control["dispatch_id"] == config.MAX_TOTAL_STEPS
+    assert sum(control["exec_retry_counts"].values()) == 0
+    assert state == before
 
 
 def test_finalize_never_selects_skipped_node():
     state = sample_state_after_eval()
     state["control"]["step_count"] = config.MAX_TOTAL_STEPS
     state["control"]["node_status"]["synthesis"] = "skipped"
-    # TODO(5번 요청): 마무리 후보에도 계약의 skipped 재선택 금지를 적용한다.
     node, _, _ = decide(state)
     assert node != "synthesis"
 
@@ -335,7 +352,6 @@ def test_quality_rewrite_never_selects_skipped_report():
     state = _evaluated_state()
     _quality_failure(state)
     state["control"]["node_status"]["report"] = "skipped"
-    # TODO(5번 요청): 규칙 9b에도 skipped 재선택 금지를 적용한다.
     node, _, _ = decide(state)
     assert node == END
 
