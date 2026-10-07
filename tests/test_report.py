@@ -283,3 +283,16 @@ def test_missing_web_dates_are_filled_from_page_not_invented():
     out = citations.fill_missing_dates(refs, fetch=lambda u: pages.get(u) or citations.URL_DATE.search(u) and "-".join(citations.URL_DATE.search(u).groups()) or "")
     assert [r["date"] for r in out] == ["2026-05-11", "2026-03-29", "2026-01-01", "2025"]
     assert citations.fill_missing_dates([{"kind": "web", "url": "https://d.com", "date": ""}], fetch=lambda u: "")[0]["date"] == ""
+
+
+def test_report_succeeds_when_web_sources_have_no_date(tmp_path, monkeypatch):
+    """게시일 없는 웹 출처(n.d.)가 있어도 보고서가 생성돼야 한다 (REFERENCE 주석이 datetime을 쓴다)."""
+    monkeypatch.setattr(config, "REPORT_PATH", str(tmp_path / config.REPORT_FILENAME))
+    state = sample_state_after_eval(True)
+    for ref in state["references"]:
+        if ref["kind"] == "web":
+            ref["date"] = ""
+    out = report_node(state, generate_fn=fake_generate, fetch_fn=lambda url: "")   # 게시일 조회도 실패
+    assert out["node_result"]["status"] == "success", out["node_result"]["error"]
+    md = open(out["report_md_path"], encoding="utf-8").read()
+    assert "(n.d.)" in md and "검색일:" in md

@@ -13,6 +13,7 @@
 - LLM 호출이 실패해도 멈추지 않는다: 해당 챕터는 근거 목록으로 대신 싣고 "[E-1002]"를 남긴다.
 """
 
+import datetime
 import json
 import os
 import re
@@ -93,7 +94,8 @@ def limits_text(state: State) -> str:
         "TRL 4~6 구간은 수율·실제 성능 같은 비공개 정보가 많아 실제 단계와 다를 수 있다.",
         f"- 확증편향 방지: 관점마다 지지 쿼리와 한계·반론 쿼리를 각각 {config.QUERIES_PER_STANCE}개씩 검색했다. "
         f"충분성 검사(관점·기술별 근거 {config.MIN_EVIDENCE}개 이상, 지지·한계·반론 각 1건 이상, 한 출처 비율 "
-        f"{config.SAME_SOURCE_CAP:.0%} 이하)에 미달한 관점만 쿼리를 바꿔 최대 {config.MAX_RETRY}회 재조사했고, "
+        f"{config.SAME_SOURCE_CAP:.0%} 이하)에 미달한 관점만 쿼리를 바꿔 관점별 최대 {config.MAX_AGENT_RETRY}회 재조사했으며, "
+        f"보고서 품질 평가 결과에 따른 추가 조사도 최대 {config.MAX_QUALITY_RESEARCH}회 수행했다. "
         "끝까지 확보하지 못한 근거는 만들지 않고 아래에 기록했다.",
         "- 웹 자료 중 게시일·작성자가 확인되지 않는 경우(REFERENCE의 n.d.)가 있어 발표 시점 판단에 한계가 있다.",
         "- 본 보고서는 기술의 우열이나 추천을 판단하지 않으며, 관점별로 확인된 근거의 차이만 정리했다.",
@@ -295,7 +297,7 @@ CHAPTERS = [
      "관점·기술별 근거 개수나 부족 현황은 바로 아래에 코드가 목록으로 붙이므로 다시 쓰지 않는다",
      lambda s: {"limitations": [x for x in s.get("synthesis", {}).get("limitations", []) if "근거" not in x or "미확인" not in x],
                 "neutrality_note": s.get("synthesis", {}).get("neutrality_note", ""),
-                "retry_count": s.get("retry_count", 0)}),
+                "retry_counts": (s.get("control") or {}).get("evidence_retry_counts", {})}),
 ]
 
 

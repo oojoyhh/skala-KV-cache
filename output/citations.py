@@ -13,6 +13,7 @@ from email.utils import parsedate_to_datetime
 from state import TECHS, State
 
 RESULT_KEYS = ("tech_summary", "trl_result", "market_result", "stakeholder_result", "domain_result")
+FETCH_TIMEOUT = 6      # 게시일 조회 1건당 제한 (초). 보고서 생성 시간을 좌우해 config 대신 여기에 둔다
 
 
 def _doc_id(source_id: str) -> str:
@@ -217,7 +218,7 @@ def _published_date(url: str) -> str:
         return "-".join(m.groups())
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=6) as resp:
+        with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT) as resp:
             html = resp.read(400_000).decode("utf-8", "ignore")
     except Exception:  # noqa: BLE001 — 게시일은 부가 정보라 실패해도 보고서는 계속
         return ""

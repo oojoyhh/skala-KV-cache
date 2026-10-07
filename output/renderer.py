@@ -6,7 +6,6 @@
 
 import glob
 import os
-import re
 import unicodedata
 
 from fontTools.ttLib import TTFont
