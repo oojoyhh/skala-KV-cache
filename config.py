@@ -7,10 +7,25 @@
 
 import os
 
+
+def _find_env_file() -> str | None:
+    """실행 위치와 무관하게 이 파일(저장소) 폴더부터 위로 올라가며 .env를 찾는다."""
+    folder = os.path.dirname(os.path.abspath(__file__))
+    while True:
+        path = os.path.join(folder, ".env")
+        if os.path.isfile(path):
+            return path
+        parent = os.path.dirname(folder)
+        if parent == folder:
+            return None
+        folder = parent
+
+
 try:  # python-dotenv가 없어도 import는 되게 함
     from dotenv import load_dotenv
 
-    load_dotenv()
+    if _env_file := _find_env_file():
+        load_dotenv(_env_file)
 except ImportError:
     pass
 

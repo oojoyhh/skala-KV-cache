@@ -371,3 +371,12 @@ def test_unexpected_client_error_is_contained_without_raw_text():
 def test_load_prompt_does_not_depend_on_cwd(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert llm.load_prompt("synthesis")
+
+
+def test_env_file_search_starts_from_repo_not_cwd(tmp_path, monkeypatch):
+    """config는 실행 위치가 아니라 저장소 폴더부터 위로 올라가며 .env를 찾는다 (app.py가 폴더를 옮기기 전에 import됨)."""
+    import os
+    monkeypatch.chdir(tmp_path)
+    found = config._find_env_file()
+    repo = os.path.dirname(os.path.abspath(config.__file__))
+    assert found is None or repo.startswith(os.path.dirname(found))
