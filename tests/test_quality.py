@@ -217,3 +217,16 @@ def test_llm_subheadings_do_not_split_sections():
     assert "시장 규모" not in sections and "4-2" in sections
     assert "관련 시장은 성장 중이다 [2]." in sections["4-2"]
     assert sorted(quality.cited_numbers(sections["4-2"])) == [1, 2]
+
+
+def test_numbered_llm_subheadings_do_not_split_sections():
+    """LLM이 본문에 '### 1. 시장 규모'처럼 번호 소제목을 써도 1장으로 잡히면 안 된다."""
+    md = ("# 보고서\n\n## SUMMARY\n- 요약 [1]\n\n## 1. 분석 배경\n배경 [1].\n\n"
+          "## 4. 관점별 평가\n\n### 4-2. 시장성\n"
+          "### 1. 시장 규모\n관련 시장 [1].\n\n### 2. 채택 현황\n채택 사례 [2].\n\n"
+          "## 5. 시사점\n관점이 갈린다 [1].\n\n## REFERENCE\n[1] A(2026-01-01). T. S, https://a\n")
+    sections = quality.split_sections(md)
+    assert sections["1"] == "배경 [1]."                       # 1장은 LLM 소제목에 덮어써지지 않음
+    assert "관련 시장 [1]." in sections["4-2"] and "채택 사례 [2]." in sections["4-2"]
+    assert sorted(quality.cited_numbers(sections["4-2"])) == [1, 2]
+    assert set(sections) == {"SUMMARY", "1", "4", "4-2", "5", "REFERENCE"}

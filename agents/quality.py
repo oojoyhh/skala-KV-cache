@@ -50,7 +50,9 @@ class JudgeVerdict(BaseModel):
 # ---------------------------------------------------------------------------
 # 보고서 Markdown 파싱
 # ---------------------------------------------------------------------------
-SECTION_HEADING = re.compile(r"^#{2,3}\s+(SUMMARY|REFERENCE|\d+\.?|4-[1-4]\.?)(\s|$)")
+# 보고서가 쓰는 제목 수준만 절 경계로 본다 (output.renderer: 장은 "## ", 4-x 소절은 "### ").
+# LLM이 본문에 쓴 소제목("### 시장 규모", "### 1. 시장 규모")은 절로 보지 않는다.
+SECTION_HEADING = re.compile(r"^(?:##\s+(SUMMARY|REFERENCE|\d+\.?)|###\s+(4-[1-4]\.?))(?:\s|$)")
 
 
 def split_sections(markdown: str) -> dict[str, str]:
@@ -65,7 +67,7 @@ def split_sections(markdown: str) -> dict[str, str]:
         if heading:
             if key:
                 sections[key] = "\n".join(buf).strip()
-            key = heading[1].rstrip(".")
+            key = (heading[1] or heading[2]).rstrip(".")
             buf = []
         elif key:
             buf.append(line)
@@ -166,12 +168,12 @@ def check_neutrality(sections: dict[str, str]) -> tuple[bool, list[str]]:
 def check_bias_control(sections: dict[str, str], state: dict, num_to_doc: dict[int, str]) -> tuple[bool, list[str]]:
     """한계·반론 근거가 있는데 인용하지 않았거나, 출처가 여럿인데 하나에만 몰렸는지."""
     reasons = []
+    keys = source_keys(state.get("references", []))
     for section, perspective in PERSPECTIVE_SECTIONS.items():
         text = sections.get(section) or ""
         cited_docs = {num_to_doc[n] for n in cited_numbers(text) if n in num_to_doc}
         for tech in TECHS:
             evidence = perspective_evidence(state, perspective, tech)
-            keys = source_keys(state.get("references", []))
             negative = {keys.get(_doc_id(e["source_id"]), _doc_id(e["source_id"]))
                         for e in evidence if e.get("stance") == "negative"}
             if negative and not (negative & cited_docs):
@@ -246,11 +248,12 @@ def judge_input(sections: dict[str, str], state: dict, num_to_doc: dict[int, str
     """Judge 입력: SUMMARY·4-1~4-4·5장 본문 + 그 절이 인용한 Evidence claim (전문 금지)."""
     body = "\n\n".join(f"## {name}\n{sections.get(name, '')}" for name in JUDGE_SECTIONS)
     cited_docs = {num_to_doc[n] for n in cited_numbers(body) if n in num_to_doc}
+    keys = source_keys(state.get("references", []))
     claims = []
     for perspective in PERSPECTIVE_FIELDS:
         for tech in TECHS:
             for e in perspective_evidence(state, perspective, tech):
-                if source_keys(state.get("references", [])).get(_doc_id(e["source_id"]), _doc_id(e["source_id"])) in cited_docs:
+                if keys.get(_doc_id(e["source_id"]), _doc_id(e["source_id"])) in cited_docs:
                     claims.append(f"- [{perspective}/{tech}] ({e.get('stance')}) {e['claim']}")
     return f"{body}\n\n## 보고서가 인용한 근거 목록\n" + ("\n".join(claims[:60]) or "(없음)")
 

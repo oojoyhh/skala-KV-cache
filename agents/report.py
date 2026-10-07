@@ -100,8 +100,10 @@ def limits_text(state: State) -> str:
         "- 웹 자료 중 게시일·작성자가 확인되지 않는 경우(REFERENCE의 n.d.)가 있어 발표 시점 판단에 한계가 있다.",
         "- 본 보고서는 기술의 우열이나 추천을 판단하지 않으며, 관점별로 확인된 근거의 차이만 정리했다.",
     ]
-    # 평가 종합이 남긴 한계(재조사 상한 도달 E-1005, 종합 실패 등)를 버리지 않고 함께 싣는다
-    recorded = [x for x in (state.get("synthesis") or {}).get("limitations", []) if str(x).strip()]
+    # 평가 종합이 남긴 한계(재조사 상한 도달 E-1005, 종합 실패 등)를 버리지 않고 함께 싣는다.
+    # 단 "<관점> 근거 부족: ..."은 아래 충분성 미달 사유 목록과 같은 내용이라 제외한다.
+    recorded = [x for x in (state.get("synthesis") or {}).get("limitations", [])
+                if str(x).strip() and not re.match(r"^\S+ 근거 부족:", str(x).strip())]
     lines += [f"- {' '.join(str(x).split())}" for x in dict.fromkeys(recorded)]
     return "\n".join(lines)
 
@@ -124,7 +126,8 @@ RECOMMEND = re.compile(
     r"(더|가장)\s*(적합|유리|나은|우수|효과적|바람직)"      # 더 적합 / 가장 우수
     r"|보다\s*(우수|유리|낫|뛰어)"                          # B보다 우수하다
     r"|우위(에 있|를 가진|가 있)"                            # 우위에 있다
-    r"|나은 선택|권장|선택하는 것이|다른 기술(들)?보다"
+    r"|나은 선택|선택하는 것이|다른 기술(들)?보다"
+    r"|권장(?=\s*(한다|합니다|된다|됨|함|할|하는))"          # '권장 설정' 같은 기술 용어는 제외
     r"|추천(?!\s*시스템)"                                   # '추천 시스템'은 기술 용어라 제외
 )
 FILLER = ("결론적으로", "결국,", "결국 ", "이와 같이", "이처럼", "종합하면")

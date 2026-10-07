@@ -315,3 +315,21 @@ def test_recommendation_regex_catches_comparisons_but_not_tech_terms():
     assert dropped == ""
     kept = report._drop_recommendations("추천 시스템 서빙에서도 같은 병목이 보고된다 [1].")
     assert kept.startswith("추천 시스템")   # 기술 용어는 지우지 않는다
+
+
+def test_chapter6_does_not_repeat_sufficiency_reasons():
+    """6장: 충분성 미달 사유 목록과 같은 내용이 synthesis 한계로 두 번 나오지 않는다."""
+    state = sample_state_after_eval(False)
+    state["synthesis"] = {"agreements": [], "conflicts": [], "neutrality_note": "", "limitations": [
+        "이해관계자 근거 부족: InfiniGen: 반론 근거 미확인(negative 0건)",      # 아래 목록과 중복 → 제외
+        "[E-1005] 재조사 상한 도달: 이해관계자 근거 부족 상태로 종합",          # 유지
+    ]}
+    text = report.limits_text(state)
+    assert "[E-1005] 재조사 상한 도달" in text
+    assert "이해관계자 근거 부족: InfiniGen" not in text
+
+
+def test_recommendation_regex_keeps_technical_terms():
+    kept = report._drop_recommendations("권장 설정은 Top-5다 [1].")
+    assert kept.startswith("권장 설정")
+    assert report._drop_recommendations("InfiniGen 도입을 권장한다 [1].") == ""
