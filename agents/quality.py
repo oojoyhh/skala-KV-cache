@@ -20,13 +20,12 @@ from pydantic import BaseModel, Field
 import config
 import llm
 from agents.report import CITE_GROUP, CITE_ITEM, RECOMMEND, _doc_id
-from state import PERSPECTIVE_FIELDS, TECHS, perspective_evidence
+from state import PERSPECTIVE_FIELDS, PERSPECTIVE_NODE, TECHS, perspective_evidence
 
 PERSPECTIVE_SECTIONS = {            # 보고서 절 → State 관점 키
     "4-1": "trl", "4-2": "market", "4-3": "stakeholder", "4-4": "domain",
 }
 SECTION_OF = {perspective: section for section, perspective in PERSPECTIVE_SECTIONS.items()}
-PERSPECTIVE_NODE = {"trl": "market", "market": "market", "stakeholder": "stakeholder", "domain": "domain"}
 TARGET_SECTIONS = ("3", "4-1", "4-2", "4-3", "4-4", "5")   # 사실 주장 절 (평가 대상)
 JUDGE_SECTIONS = ("SUMMARY", "4-1", "4-2", "4-3", "4-4", "5")
 REQUIRED_SECTIONS = ("SUMMARY", "REFERENCE")
@@ -176,6 +175,10 @@ def state_gaps(state: dict) -> dict[str, tuple[int, str]]:
         for tech in TECHS:
             evidence = perspective_evidence(state, perspective, tech)
             total += len(evidence)
+            if perspective == "trl":   # TRL은 개수 기준만 본다 (supervisor의 충분성 기준과 동일)
+                if len({_doc_id(e["source_id"]) for e in evidence}) < config.MIN_TRL_EVIDENCE:
+                    problems.append(f"{tech} 서로 다른 출처 {config.MIN_TRL_EVIDENCE}건 미만")
+                continue
             if not evidence:
                 problems.append(f"{tech} 근거 없음")
                 continue
@@ -193,9 +196,11 @@ def failing_perspectives(result: dict) -> set[str]:
     found = set()
     for item in ("bias_control", "perspective_coverage"):
         for reason in result[item]["reasons"]:
-            section = reason.split("/")[0].split()[0]
-            if section in PERSPECTIVE_SECTIONS:
+            # 규칙 사유는 "4-3/InfiniGen: ...", Judge 사유는 "Judge: 4-3 절에서 ..." 형태라 둘 다 절 번호를 찾는다
+            for section in re.findall(r"4-[1-4]", reason):
                 found.add(PERSPECTIVE_SECTIONS[section])
+            if not re.search(r"4-[1-4]", reason) and reason.startswith("Judge:"):
+                found.update(PERSPECTIVE_SECTIONS.values())   # 절을 특정하지 못한 Judge 사유는 모든 관점 후보
     return found
 
 

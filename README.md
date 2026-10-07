@@ -82,7 +82,7 @@
 - **상관** : `control.trace_id`를 LangSmith 실행 metadata에 같은 값으로 넘겨, State와 트레이스를 서로 찾습니다. 완료 메시지에도 출력합니다.
 - **재개/복구** : `node_status`(success/failed/skipped), `node_errors`, `exec_retry_counts`, `evidence_retry_counts`, `report_retry_count`, `dispatch_id`, `run_status`로 어디서 멈췄고 무엇을 다시 해야 하는지 판단합니다. 프로세스 종료 후 영속 재개(SQLite 등 persistent checkpointer)는 이번 범위에서 제외했습니다.
 - **동시 처리** : Supervisor가 한 번에 하나의 노드만 호출하므로 같은 키에 동시 쓰기가 없습니다. 여러 노드가 누적해야 하는 `references`만 `Annotated[list, operator.add]` Reducer를 유지합니다. 오래된 결과를 잘못 읽지 않도록 `control.dispatch_id`를 노드가 `node_result.dispatch_id`로 되돌려주고, 값이 다르면 반환 누락으로 처리합니다.
-- **종료 보장** : 노드별 실행 실패 재시도(`MAX_EXEC_RETRY`), 관점별 근거 부족 재조사(`MAX_AGENT_RETRY`), 보고서 재작성(`MAX_REPORT_RETRY`), 전체 하위 노드 실행 수(`MAX_TOTAL_STEPS`) 상한을 둡니다. 상한에 닿으면 마무리 모드로 들어가 종합·보고서·품질 평가를 각 1회만 시도하고 종료하므로, 추가 실행이 최대 3회로 제한됩니다.
+- **종료 보장** : 노드별 실행 실패 재시도(`MAX_EXEC_RETRY`), 관점별 근거 부족 재조사(`MAX_AGENT_RETRY`), 품질 평가 기반 추가 조사(`MAX_QUALITY_RESEARCH`), 보고서 재작성(`MAX_REPORT_RETRY`), 전체 하위 노드 실행 수(`MAX_TOTAL_STEPS`) 상한을 둡니다. 상한에 닿으면 마무리 모드로 들어가 종합·보고서·품질 평가를 각 1회만 시도하고 종료하므로, 추가 실행이 최대 3회로 제한됩니다.
 
 ## Architecture
 
@@ -120,6 +120,7 @@ flowchart TD
 ├── orchestration/
 │   └── supervisor.py       # 조정 계층: 라우팅 규칙, 충분성 판정 호출
 ├── agents/                 # 하위 에이전트 (research, market, stakeholder, domain, synthesis, report, quality)
+├── output/                 # 보고서 출력 계층 (citations: 인용·출처, renderer: Markdown·PDF)
 ├── rag/                    # 논문 로딩·인덱싱·검색
 ├── tools/                  # 웹 검색 도구
 ├── prompts/                # 프롬프트 템플릿

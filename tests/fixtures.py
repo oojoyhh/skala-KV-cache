@@ -1,4 +1,6 @@
-"""단독 테스트·dummy 실행용 샘플 데이터 (DEV_PLAN §3-5). 담당: 5번.
+"""계약 v2.2의 단독 테스트·dummy 실행용 샘플 데이터. 담당: 1번.
+
+모든 근거와 품질 결과는 연결 확인용 샘플이며 실제 조사·평가 결과가 아니다.
 
 제공하는 것
 - sample_state_after_research()          : 기술 조사까지 끝난 State      → 3·4번 평가 노드 단독 실행용
@@ -13,14 +15,20 @@
 
 import copy
 import hashlib
-import os
 from collections import Counter
+from collections.abc import Callable
+from functools import wraps
+from pathlib import Path
 
 import config
 from state import (
     PERSPECTIVES,
     TECHS,
     Evidence,
+    MetricResult,
+    NodeName,
+    NodeResult,
+    QualityResult,
     Reference,
     State,
     make_initial_state,
@@ -167,7 +175,7 @@ def expected_sufficiency(state: State) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 샘플 State
+# 1. 샘플 State — 제어 초기값은 공용 생성 함수를 그대로 사용
 # ---------------------------------------------------------------------------
 
 
@@ -189,7 +197,6 @@ def sample_state_after_eval(sufficient: bool = True) -> State:
                 sample_domain_output()):
         s = _merge(s, upd)
     s["sufficiency"] = expected_sufficiency(s)
-    s["retry_count"] = 0 if sufficient else 1
     return copy.deepcopy(s)
 
 
@@ -210,49 +217,131 @@ def fake_search(query: str, stance: str = "neutral", max_results: int = 5, used_
 
 
 # ---------------------------------------------------------------------------
-# dummy 노드 — python app.py --dummy
+# 2. 더미 실행 결과 — 공통 래퍼로 성공·실패 모두 dispatch_id를 보고
 # ---------------------------------------------------------------------------
 
 
+def _dummy_node(node: NodeName):
+    """페이로드 생성 함수에 계약의 실행 결과와 예외 처리를 붙인다."""
+    def decorate(fn: Callable[[State], dict]) -> Callable[[State], dict]:
+        @wraps(fn)
+        def wrapped(state: State) -> dict:
+            result: NodeResult = {
+                "node": node,
+                "dispatch_id": state["control"]["dispatch_id"],
+                "status": "success",
+                "error": "",
+            }
+            try:
+                return {**fn(state), "node_result": result}
+            except Exception as exc:
+                # 실패한 페이로드는 반환하지 않아 기존 State 결과를 보존한다.
+                result["status"] = "failed"
+                result["error"] = f"E-1002 [DUMMY] {node}: {exc}"
+                return {"node_result": result}
+
+        return wrapped
+
+    return decorate
+
+
+@_dummy_node("research")
 def _dummy_research(state: State) -> dict:
     return sample_research_output()
 
 
+@_dummy_node("market")
 def _dummy_market(state: State) -> dict:
     return sample_market_output()
 
 
+@_dummy_node("stakeholder")
 def _dummy_stakeholder(state: State) -> dict:
     # 첫 실행은 InfiniGen 한계·반론 근거 없음 → 충분성 검사 불충분 → 재조사(retry_hint 있음) 때 충족
     first_run = not retry_hint(state, "stakeholder")
     return sample_stakeholder_output(insufficient_tech="InfiniGen" if first_run else None)
 
 
+@_dummy_node("domain")
 def _dummy_domain(state: State) -> dict:
     return sample_domain_output()
 
 
-def _dummy_check(state: State) -> dict:
-    suff = expected_sufficiency(state)
-    insufficient = not all(suff[p] for p in PERSPECTIVES)
-    return {"sufficiency": suff, "retry_count": state.get("retry_count", 0) + (1 if insufficient else 0)}
-
-
+@_dummy_node("synthesis")
 def _dummy_synthesis(state: State) -> dict:
     limits = [f"{p} 근거 부족: {why}" for p, why in state.get("sufficiency", {}).get("reasons", {}).items()]
     return {"synthesis": {"agreements": ["[샘플] 일치 지점"], "conflicts": [], "neutrality_note": "[샘플] 우열 판정 없음",
                           "limitations": limits or ["[샘플] 공개 정보 기반 추정의 한계"]}}
 
 
+# ---------------------------------------------------------------------------
+# 3. 더미 보고서 — 실제 보고서와 구분되는 Markdown·한 페이지 PDF
+# ---------------------------------------------------------------------------
+
+
+@_dummy_node("report")
 def _dummy_report(state: State) -> dict:
-    os.makedirs(config.OUTPUT_DIR, exist_ok=True)
-    path = os.path.join(config.OUTPUT_DIR, "dummy_report.md")
+    """샘플 파일을 생성하고 두 경로와 증가한 버전을 반환한다."""
+    from fpdf import FPDF
+
+    output_dir = Path(config.OUTPUT_DIR)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stem = "dummy_" + Path(config.REPORT_FILENAME).stem
+    md_path = output_dir / f"{stem}.md"
+    pdf_path = output_dir / f"{stem}.pdf"
+    version = state["report_version"] + 1
     unique_docs = {r["source_id"].split("#")[0] for r in state.get("references", [])}
-    with open(path, "w", encoding="utf-8") as f:
+    with md_path.open("w", encoding="utf-8") as f:
         f.write("# [DUMMY] KV cache 평가 보고서\n\n")
-        f.write(f"- retry_count: {state.get('retry_count')}\n- REFERENCE(문서 단위): {len(unique_docs)}건\n")
+        f.write("연결 확인용 샘플이며 실제 조사·품질 평가 결과가 아닙니다.\n\n")
+        f.write(f"- report_version: {version}\n- REFERENCE(샘플 문서): {len(unique_docs)}건\n")
         f.write(f"- 한계점: {state.get('synthesis', {}).get('limitations')}\n")
-    return {"report_path": path}
+
+    # 전문은 Markdown에만 남겨 샘플 근거 수와 무관하게 PDF 한 쪽을 유지한다.
+    pdf = FPDF()
+    pdf.add_font("ko", fname=str(Path(config.FONT_DIR) / "NanumGothic-Regular.ttf"))
+    pdf.add_page()
+    pdf.set_font("ko", size=12)
+    pdf.multi_cell(0, 8, text=(
+        "[DUMMY] KV cache 평가 보고서\n"
+        "연결 확인용 샘플이며 실제 조사·품질 평가 결과가 아닙니다.\n"
+        f"보고서 버전: {version} / 샘플 문서: {len(unique_docs)}건"
+    ))
+    pdf.output(str(pdf_path))
+    return {
+        "report_path": str(pdf_path),
+        "report_md_path": str(md_path),
+        "report_version": version,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 4. 더미 품질 평가 — 실제 규칙 검사·Judge 호출 없이 통과 샘플 반환
+# ---------------------------------------------------------------------------
+
+
+@_dummy_node("quality")
+def _dummy_quality(state: State) -> dict:
+    """현재 보고서 버전에 대한 가짜 통과 결과를 반환한다."""
+    metric: MetricResult = {
+        "rule_passed": True, "judge_passed": None,
+        "passed": True, "reasons": [],
+    }
+    quality: QualityResult = {
+        "groundedness": copy.deepcopy(metric),
+        "neutrality": copy.deepcopy(metric),
+        "bias_control": copy.deepcopy(metric),
+        "perspective_coverage": copy.deepcopy(metric),
+        "page_count": 1,
+        "page_limit_passed": 1 <= config.MAX_REPORT_PAGES,
+        "required_sections_passed": True,
+        "passed": 1 <= config.MAX_REPORT_PAGES,
+        "feedback": ["[DUMMY] 연결 확인용 통과 샘플이며 실제 품질 평가 결과가 아닙니다."],
+        "evaluated_report_version": state["report_version"],
+        "action": "pass",
+        "target_node": "",
+    }
+    return {"quality_result": quality}
 
 
 DUMMY_NODES = {
@@ -260,7 +349,7 @@ DUMMY_NODES = {
     "market": _dummy_market,
     "stakeholder": _dummy_stakeholder,
     "domain": _dummy_domain,
-    "check": _dummy_check,
     "synthesis": _dummy_synthesis,
     "report": _dummy_report,
+    "quality": _dummy_quality,
 }
