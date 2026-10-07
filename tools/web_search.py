@@ -158,7 +158,12 @@ def result_to_reference(
     hostname = urlsplit(normalized).hostname or ""
     venue = result.get("venue") or result.get("site_name") or result.get("source") or hostname
     author = result.get("author") or result.get("organization") or ""
-    published = result.get("published_date") or result.get("date") or ""
+    published = (
+        result.get("published_date")
+        or result.get("published_at")
+        or result.get("date")
+        or ""
+    )
 
     return {
         "source_id": make_source_id(normalized),
