@@ -122,14 +122,18 @@ def _quality_stale(state: State) -> bool:
 def _finalize(state: State, control: ControlState, last: str | None) -> tuple[str, str]:
     """마무리 모드 (F1~F5). 각 노드는 한 번만 시도한다."""
     tried = control["finalize_tried"]
+
+    def can_try(node: str) -> bool:  # 마무리 모드에서도 skipped 노드는 다시 고르지 않는다 (계약 1-2)
+        return node not in tried and control["node_status"].get(node) != "skipped"
+
     # F1: 마무리 시도 중 실패만 종료 사유다. 상한 직전 조사 노드 실패로 보고서 없이 끝나지 않게 한다.
     if last in tried and control["node_status"][last] == "failed":
         return END, f"실행 상한 도달 후 {last} 실패 → 종료"
-    if (not state.get("synthesis") or "synthesis" in control["stale"]) and "synthesis" not in tried:
+    if (not state.get("synthesis") or "synthesis" in control["stale"]) and can_try("synthesis"):
         return "synthesis", "실행 상한 도달 → 마무리: 평가 종합 1회"
-    if (state.get("report_version", 0) == 0 or "report" in control["stale"]) and "report" not in tried:
+    if (state.get("report_version", 0) == 0 or "report" in control["stale"]) and can_try("report"):
         return "report", "실행 상한 도달 → 마무리: 보고서 1회"
-    if state.get("report_version", 0) > 0 and _quality_stale(state) and "quality" not in tried:
+    if state.get("report_version", 0) > 0 and _quality_stale(state) and can_try("quality"):
         return "quality", "실행 상한 도달 → 마무리: 품질 평가 1회"
     return END, "실행 상한 도달 → 종료"
 
@@ -262,6 +266,9 @@ def decide(state: State) -> tuple[str, ControlState, SufficiencyCheck | None]:
 
         # 9b. 보고서 재작성 (재조사를 고르지 않은 이유를 함께 남긴다)
         judged = f"{advice}, {blocked}" if quality.get("action") == "research" else advice
+        if control["node_status"].get("report") == "skipped":  # skipped 노드는 다시 고르지 않는다
+            control["run_status"] = "exhausted"
+            return choose(END, f"품질 미달({found}) — {judged}, report 실행 제외됨(skipped) → 종료")
         if control["report_retry_count"] < config.MAX_REPORT_RETRY:
             control["report_retry_count"] += 1
             return choose("report", f"품질 미달({found}) — {judged} → 보고서 재작성 "
