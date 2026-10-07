@@ -120,6 +120,7 @@ flowchart TD
 ├── orchestration/
 │   └── supervisor.py       # 조정 계층: 라우팅 규칙, 충분성 판정 호출
 ├── agents/                 # 하위 에이전트 (research, market, stakeholder, domain, synthesis, report, quality)
+├── output/                 # 보고서 출력 계층 (citations: 인용·출처, renderer: Markdown·PDF)
 ├── rag/                    # 논문 로딩·인덱싱·검색
 ├── tools/                  # 웹 검색 도구
 ├── prompts/                # 프롬프트 템플릿
