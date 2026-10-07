@@ -699,8 +699,10 @@ def report_node(state: State, generate_fn=None, fetch_fn=None) -> dict:
         render_pdf(blocks, config.REPORT_PATH)
         with open(md_path, "w", encoding="utf-8") as f:
             f.write(to_markdown(blocks))
-    except (OSError, ValueError, FileNotFoundError) as exc:
-        return {"node_result": {**node_result, "status": "failed", "error": f"E-1002 보고서 생성 실패: {exc}"[:200]}}
+    except Exception as exc:  # noqa: BLE001 — 계약 §3: 어떤 예외도 그래프 밖으로 던지지 않는다
+        # 오류 원문은 싣지 않는다 (API 키 일부 등 비밀값이 섞일 수 있음, AGENTS 규칙 11)
+        return {"node_result": {**node_result, "status": "failed",
+                                "error": f"E-1002 보고서 생성 실패 ({type(exc).__name__})"}}
     return {
         "report_path": config.REPORT_PATH,
         "report_md_path": md_path,

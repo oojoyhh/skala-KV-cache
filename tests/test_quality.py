@@ -126,3 +126,67 @@ def test_judge_input_is_limited_to_target_sections(tmp_path, monkeypatch):
     assert "## SUMMARY" in prompt and "## 5\n" in prompt
     assert "## 1\n" not in prompt and "## REFERENCE" not in prompt    # 전문 투입 금지
     assert "보고서가 인용한 근거 목록" in prompt
+
+
+def test_required_sections_and_page_limit(tmp_path, monkeypatch):
+    """필수 목차(SUMMARY·REFERENCE)가 없거나 쪽수를 못 세면 통과시키지 않는다 (계약 §4-2)."""
+    md = tmp_path / "report.md"
+    md.write_text("# 보고서\n\n## 3. 기술 개요\n본문 [1].\n", encoding="utf-8")
+    state = {"report_md_path": str(md), "report_path": str(tmp_path / "없는파일.pdf"), "references": []}
+    result = quality.evaluate_report(state, judge_fn=judge(True))
+    assert result["required_sections_passed"] is False and result["passed"] is False
+    assert result["page_count"] == 0 and result["page_limit_passed"] is False
+    assert any("필수 목차 누락: SUMMARY" in f for f in result["feedback"])
+    assert any("쪽수 확인 불가" in f for f in result["feedback"])
+
+
+def test_action_rewrite_when_evidence_exists(tmp_path, monkeypatch):
+    """근거는 State에 있는데 보고서 서술이 문제면 rewrite (계약 §4-1)."""
+    out = quality_node(built_state(tmp_path, monkeypatch), judge_fn=judge(False, "SUMMARY에서 우위 암시"))
+    result = out["quality_result"]
+    assert result["passed"] is False
+    assert result["action"] == "rewrite" and result["target_node"] == ""
+
+
+def test_action_research_targets_weakest_perspective():
+    """State 근거 자체가 비었거나 쏠려 있으면 research + 근거가 가장 적은 관점 (계약 §4-1)."""
+    state = {
+        "stakeholder_result": {"TurboQuant": {"competitors": [
+            {"claim": "지지", "source_id": "web:a", "stance": "positive"},
+            {"claim": "한계", "source_id": "web:b", "stance": "negative"}]}, "InfiniGen": {}},
+        "domain_result": {t: {"cost": [{"claim": "c1", "source_id": f"web:{t}1", "stance": "positive"},
+                                       {"claim": "c2", "source_id": f"web:{t}2", "stance": "positive"}]}
+                          for t in ("TurboQuant", "InfiniGen")},   # 근거 4건(한계·반론 없음)
+    }
+    result = {
+        "passed": False,
+        "bias_control": {"reasons": ["4-4/InfiniGen: 한계·반론 근거 1건이 있으나 인용되지 않음"]},
+        "perspective_coverage": {"reasons": ["4-3 절에 InfiniGen의 근거 미확보 표시가 없음"]},
+    }
+    action, target, extra = quality.recommend(result, state)
+    assert action == "research"
+    assert target == "stakeholder"            # 근거 2건 < 도메인 4건 → 가장 적은 관점
+    assert extra and "재조사 권고" in extra[0]
+
+
+def test_action_pass_when_everything_ok(tmp_path, monkeypatch):
+    out = quality_node(built_state(tmp_path, monkeypatch), judge_fn=judge(True))
+    assert out["quality_result"]["action"] == "pass" and out["quality_result"]["target_node"] == ""
+
+
+def test_unexpected_exception_becomes_failed(tmp_path, monkeypatch):
+    """계약 §3: 어떤 예외도 그래프 밖으로 던지지 않는다."""
+    monkeypatch.setattr(quality, "evaluate_report", lambda *a, **k: (_ for _ in ()).throw(TypeError("boom")))
+    out = quality_node(built_state(tmp_path, monkeypatch), judge_fn=judge(True))
+    assert out["node_result"]["status"] == "failed" and "TypeError" in out["node_result"]["error"]
+    assert "quality_result" not in out
+
+
+def test_error_message_does_not_leak_exception_text(tmp_path, monkeypatch):
+    def leaking_judge(prompt):
+        raise llm.LLMError("[E-1002] Incorrect API key provided: sk-proj-SECRET")
+
+    out = quality_node(built_state(tmp_path, monkeypatch), judge_fn=leaking_judge)
+    error = out["node_result"]["error"]
+    assert out["node_result"]["status"] == "failed"
+    assert "sk-proj" not in error and "API key" not in error and "LLMError" in error
