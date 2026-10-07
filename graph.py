@@ -24,41 +24,12 @@ def select_node(state: State) -> dict:
     return {"tech_sw": config.TECH_SW, "tech_hw": config.TECH_HW, "domain": config.DOMAIN}
 
 
-# TODO(1번 요청): tests/fixtures.py의 DUMMY_NODES가 node_result를 반환하고 quality 더미가 생기면
-#                 아래 _with_node_result·_dummy_quality를 지운다 (계약 10장 tests/fixtures.py 항목).
-def _with_node_result(name: str, fn):
-    """[임시] node_result를 반환하지 않는 기존 더미 노드에 성공 결과를 붙인다 (--dummy 전용)."""
-    def node(state: State) -> dict:
-        out = dict(fn(state))
-        out.setdefault("node_result", {"node": name, "dispatch_id": state["control"]["dispatch_id"],
-                                       "status": "success", "error": ""})
-        return out
-    return node
-
-
-def _dummy_quality(state: State) -> dict:
-    """[임시] 품질 평가 더미 — 항상 통과."""
-    ok = {"rule_passed": True, "judge_passed": None, "passed": True, "reasons": []}
-    return {
-        "quality_result": {
-            "groundedness": ok, "neutrality": ok, "bias_control": ok, "perspective_coverage": ok,
-            "page_count": 0, "page_limit_passed": True, "required_sections_passed": True,
-            "passed": True, "feedback": [], "evaluated_report_version": state.get("report_version", 0),
-            "action": "pass", "target_node": "",
-        },
-        "node_result": {"node": "quality", "dispatch_id": state["control"]["dispatch_id"],
-                        "status": "success", "error": ""},
-    }
-
-
 def load_nodes(dummy: bool = False) -> dict:
     """하위 노드 7개. dummy=True면 tests/fixtures.py의 가짜 노드를 쓴다."""
     if dummy:
         from tests.fixtures import DUMMY_NODES
 
-        nodes = {name: _with_node_result(name, DUMMY_NODES[name]) for name in NODES if name in DUMMY_NODES}
-        nodes.setdefault("quality", _dummy_quality)
-        return nodes
+        return {name: DUMMY_NODES[name] for name in NODES}
 
     from agents.domain import domain_node
     from agents.market import market_node

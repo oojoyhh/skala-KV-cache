@@ -60,8 +60,8 @@ def evidence_catalog(state: State) -> dict[str, tuple[TechName, str, Evidence]]:
 def _retry_capped(state: State, perspective: str) -> bool:
     """그 관점을 맡은 노드가 근거 부족 재조사 상한에 닿았거나 실행에서 제외됐는가 (계약 1-2 규칙 5)."""
     control = state.get("control")
-    if not control:  # TODO(5번): retry_count 삭제 시 이 분기 제거 — supervisor 이전 그래프·테스트 호환
-        return state.get("retry_count", 0) > config.MAX_RETRY
+    if not control:  # supervisor 없이 단독 실행한 State — 재조사 기록이 없으므로 상한 도달로 보지 않는다
+        return False
     node = PERSPECTIVE_NODE[perspective]
     return (control["evidence_retry_counts"].get(node, 0) >= config.MAX_AGENT_RETRY
             or control["node_status"].get(node) == "skipped")

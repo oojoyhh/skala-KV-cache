@@ -186,7 +186,7 @@ python -c "from tests.fixtures import sample_state_after_research, fake_search; 
 | RAG | `PAPERS`, `EMBEDDING_MODEL="BAAI/bge-m3"`, `CHUNK_SIZE=800`, `CHUNK_OVERLAP=100`, `TOP_K=5`, `MMR_FETCH_K=10`, `MMR_LAMBDA=0.7`, `RAG_MAX_REWRITE=2`, `FAISS_INDEX_DIR`, `RETRIEVAL_EVAL_SET` |
 | 출력 | `REPORT_PATH`(가이드 파일명), `FONT_DIR` |
 
-- `MAX_RETRY`는 **삭제 예정**(`MAX_AGENT_RETRY`로 대체). 각 담당이 옮긴 뒤 5번이 지운다. 새 코드에서 쓰지 않는다.
+- RAG 단계의 `MAX_RETRY`·State `retry_count`는 삭제했다(`MAX_AGENT_RETRY`·`control` 카운터로 대체).
 - `PAPERS[기술명]`은 `arxiv_id`, `path`, `title`, `author`, `date`, `venue`를 담는다. 로더와 REFERENCE 생성은 이 메타데이터를 공통으로 사용한다.
 - `.env`: `OPENAI_API_KEY`, `TAVILY_API_KEY`, `LANGSMITH_API_KEY` (필수, `app.py`가 시작 시 확인 — `--dummy`·`--mermaid`는 제외), `LANGSMITH_TRACING=true`·`LANGSMITH_PROJECT`, `GENERATOR_MODEL`·`JUDGE_MODEL`·`USE_SEARCH_CACHE`(선택). 실제 키는 커밋 금지.
 - LLM은 `llm.py`로만 호출: `generate(prompt)`, `structured(prompt, PydanticModel)`, `StructuredClient()`(4번 분류 함수에 그대로 주입), `load_prompt(name)`. 실패 시 `LLMError("[E-1002] ...")` → 노드가 잡아서 처리(§6).
@@ -280,11 +280,12 @@ Agent 단계 결정(패턴, 라우팅, State, 실패 처리, 품질 평가, 상�
 
 | # | 항목 | 현재 | 담당 |
 |---|---|---|---|
-| A | 품질 평가 노드 계약 v2.2.1 맞추기 | PR #37 변경 요청: `required_sections_passed`·`action`·`target_node` 추가, 예외 전부 잡기, 예외 원문 미기재 | 6번 |
-| B | fixtures `DUMMY_NODES` 갱신 | `node_result`·`report_version`·quality 더미(`action`·`target_node`) — 반영 후 `graph.py` 임시 래퍼 제거(5번) | 1번 → 5번 |
-| C | 각 노드 `node_result` 반환 | research·market·stakeholder·domain | 2·3·4번 |
-| D | `retry_count`·`MAX_RETRY` 삭제 | market·report·check·fixtures가 아직 사용. 각 담당 반영 후 5번이 State·config·synthesis 호환 분기에서 제거 | 3·4·6·1번 → 5번 |
-| E | 통합 실행·트레이스 캡처 | 6번 PR 후 실제 실행, 재작업 1회 이상 경로로 `tracing-N.png` 캡처 | 5번 + 전원 |
+| A | ~~품질 평가 노드 계약 맞추기~~ | 완료 (#37·#43) | 6번 |
+| B | ~~fixtures `DUMMY_NODES` 갱신, `graph.py` 임시 래퍼 제거~~ | 완료 (#45, 정리 PR) | 1번 → 5번 |
+| C | ~~각 노드 `node_result` 반환~~ | 완료 (#38·#39·#42) — 하위 노드 7개 모두 반환 | 2·3·4번 |
+| D | ~~`retry_count`·`MAX_RETRY` 삭제~~ | 완료 (정리 PR) | 5번 |
+| E | 통합 실행·트레이스 캡처 | 실제 실행(Tavily·LangSmith 키 필요), 재작업 1회 이상 경로로 `tracing-N.png` 캡처 | 5번 + 전원 |
+| H | 공통화 2단계 (교수님 코드 피드백) | 공통화 1단계(#46) 머지 후 각자 교체 — AGENTS.md 담당 표 **공통화** 항목 | 1·2·3·4·6번 |
 | F | 설계서 v6 | 패턴·State D-1·그래프 D-2·품질 평가를 계약서와 일치 | 2번 |
 | G | README | Pattern·동적 처리·선정 기술·State Schema 7항목·Contributors(PM·PL 제외)·재현성 범위 | 6번 |
 

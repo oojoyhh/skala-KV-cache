@@ -200,7 +200,6 @@ class State(TypedDict, total=False):
     stakeholder_result: dict[TechName, StakeholderResult]  # stakeholder
     domain_result: dict[TechName, DomainResult]    # domain
     sufficiency: SufficiencyCheck                  # supervisor가 evaluate_sufficiency() 결과를 저장
-    retry_count: int  # 계약 v2.1에서 삭제 예정 — control.evidence_retry_counts로 대체. 각 담당 반영 후 5번이 제거
     synthesis: Synthesis                           # synthesis
     references: Annotated[list[Reference], operator.add]  # 모든 조사 노드 (reducer로 누적)
     report_path: str                     # report — 기존 이름 유지 (PDF)
@@ -220,7 +219,6 @@ def make_initial_state() -> State:
         "tech_sw": TECH_SW,
         "tech_hw": TECH_HW,
         "domain": DOMAIN,
-        "retry_count": 0,  # 계약 v2.1에서 삭제 예정 — control.evidence_retry_counts로 대체. 각 담당 반영 후 5번이 제거
         "references": [],
         "report_version": 0,
         "control": {
